@@ -1,13 +1,13 @@
 using System.IO;
-using System.Text;
 using System.Runtime.InteropServices;
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Input;
-using System.Windows.Interop;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Threading;
+using System.Text;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Interactivity;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform;
+using Avalonia.Platform.Storage;
 using OpenMac.Gui.Dialogs;
 using OpenMac.Gui.Emulation;
 
@@ -25,39 +25,45 @@ public partial class MainWindow : Window
 
     private readonly Settings _settings;
     private IEmulator _emulator;
-    private WriteableBitmap _bitmap = null!;
+    private WriteableBitmap? _bitmap;
     private byte[] _bgra = null!;
 
     // The backend runs emulation and audio on its own thread, so playback is never
-    // stalled by this UI thread. The window only displays the latest frame:
-    // CompositionTarget.Rendering fires once per display refresh and blits whatever
+    // stalled by this UI thread. The window only displays the latest frame: an
+    // animation-frame callback fires once per display refresh and blits whatever
     // new frame the emulator has produced since the previous refresh.
-    private EventHandler? _renderHandler;
+    private bool _closed;
+    private bool _tickFaultLogged;
+    private bool _firstFrameLogged;
 
     private bool _mouseLocked;
     // The click which captures the host pointer is not a Macintosh click. Keep
-    // the guest button as an explicit state instead of deriving it from WPF's
-    // physical LeftButton flag during motion: the latter remains pressed while
+    // the guest button as an explicit state instead of deriving it from the
+    // physical button flag during motion: the latter remains pressed while
     // the capture click is being released and used to leave the Mac button
     // stuck down after that release was intentionally ignored.
     private bool _guestMouseDown;
     private bool _captureMotionLogged;
-    private HwndSource? _windowSource;
-    private bool _rawMouseRegistered;
-    private long _pendingMouseDx, _pendingMouseDy;
+    // Captured motion is measured in guest pixels: the screen image is laid out
+    // at the machine's own resolution inside the scaling viewbox, so a position
+    // relative to it is already in the Mac's units. Fractions carry over to the
+    // next flush rather than being truncated away.
+    private Point? _lastPointer;
+    private double _pendingMouseDx, _pendingMouseDy;
     private ulong _capturedMotionPackets;
     private long _capturedMouseDx, _capturedMouseDy;
-    private KeyboardHook? _keyHook;        // swallows host combos while input is captured
-    private int _lockCx, _lockCy;          // window-center reference, physical screen px
+    private static readonly Cursor HiddenCursor = new(StandardCursorType.None);
+    // ADB codes currently held down. A key is pressed on the Mac once however
+    // long the host repeats it, and everything still held is lifted when the
+    // window loses focus -- the host never sends those releases to us.
+    private readonly HashSet<int> _keysDown = new();
     private string _baseTitle = "OpenMac";
     private bool _fullscreen;
-    private WindowStyle _savedStyle;
     private WindowState _savedState;
 
     public MainWindow()
     {
         InitializeComponent();
-        WindowTheming.ApplyDarkTitleBar(this);
 
         _settings = Settings.Load();
         _emulator = CreateBackend(_settings);
@@ -67,31 +73,19 @@ public partial class MainWindow : Window
         StatusBackend.Text = _emulator.IsRealCore ? "core: native" : "core: stub (not linked)";
         Log.Line($"GUI ready — {_emulator.BackendName} backend, screen {_emulator.ScreenWidth}x{_emulator.ScreenHeight}");
 
-        timeBeginPeriod(1);                       // sharpen OS timer resolution for the emu thread's pacing
-        _renderHandler = (_, _) => Tick();
-        CompositionTarget.Rendering += _renderHandler;
-
         WireInput();
-        // WPF coalesces legacy WM_MOUSEMOVE messages around SetCursorPos. That
-        // can reduce a captured mouse to one synthetic pixel of motion. Raw
-        // Input is attached once the HWND exists and supplies the HID's actual
-        // relative deltas; the WPF button events remain enabled.
-        SourceInitialized += (_, _) => InitializeRawMouse();
-        // The captured-input keyboard hook lives for the window's lifetime and
-        // does nothing until capture switches it on. It reads _emulator through
-        // this, so a backend swap never leaves it pointing at a dead machine.
-        _keyHook = new KeyboardHook((code, down) => _emulator.KeyEvent(code, down), ToggleFullscreen);
         BuildRecentMenu();
         BuildMonitorMenu();
         UpdateUi();
 
+        Opened += (_, _) => RequestAnimationFrame(OnAnimationFrame);
         Loaded += (_, _) =>
         {
             ApplyScale();
             if (!string.IsNullOrEmpty(_settings.ModelLastRom) && File.Exists(_settings.ModelLastRom))
                 LoadRom(_settings.ModelLastRom!);
             // Files handed on the command line ride the same router as a drop,
-            // so "openmac.exe game.img" and double-click associations both work.
+            // so "openmac game.img" and file associations both work.
             string[] args = Environment.GetCommandLineArgs();
             for (int i = 1; i < args.Length; i++)
                 if (File.Exists(args[i])) RouteMedia(args[i]);
@@ -99,34 +93,32 @@ public partial class MainWindow : Window
         };
         Closing += (_, _) =>
         {
+            _closed = true;
             UnlockMouse();
-            ShutdownRawMouse();
-            if (_renderHandler != null) CompositionTarget.Rendering -= _renderHandler;
-            timeEndPeriod(1);
-            _keyHook?.Dispose();
+            ReleaseKeys();
             _emulator.Dispose();   // stop the emulation thread and persist the hard disk
             _settings.Save();
         };
     }
 
-    /// <summary>Real core if openmac_c.dll loads; otherwise the stub preview.
+    /// <summary>Real core if libopenmac_c.so loads; otherwise the stub preview.
     /// The settings' model picks which machine the native backend drives.</summary>
     private static IEmulator CreateBackend(Settings settings)
     {
         try
         {
-            Native.omac_version();   // probes the native DLL; throws if it's missing
+            Native.omac_version();   // probes the native library; throws if it's missing
             if (settings.IsIifx)
             {
-                Log.Line("backend: native core (openmac_c.dll), Macintosh IIfx");
+                Log.Line("backend: native core (libopenmac_c.so), Macintosh IIfx");
                 return new IifxEmulator { VideoRomPath = settings.VideoRomIifx };
             }
             if (settings.IsQuadra)
             {
-                Log.Line("backend: native core (openmac_c.dll), Quadra 650");
+                Log.Line("backend: native core (libopenmac_c.so), Quadra 650");
                 return new QuadraEmulator { Monitor = settings.MonitorQuadra };
             }
-            Log.Line("backend: native core (openmac_c.dll), Macintosh Classic");
+            Log.Line("backend: native core (libopenmac_c.so), Macintosh Classic");
             return new NativeEmulator();
         }
         catch (Exception ex)
@@ -141,8 +133,13 @@ public partial class MainWindow : Window
     {
         int w = _emulator.ScreenWidth, h = _emulator.ScreenHeight;
         _bgra = new byte[w * h * 4];
-        _bitmap = new WriteableBitmap(w, h, 96, 96, PixelFormats.Bgra32, null);
+        WriteableBitmap? old = _bitmap;
+        _bitmap = new WriteableBitmap(new PixelSize(w, h), new Vector(96, 96),
+                                      PixelFormat.Bgra8888, AlphaFormat.Opaque);
         ScreenImage.Source = _bitmap;
+        ScreenImage.Width = w;
+        ScreenImage.Height = h;
+        old?.Dispose();   // a bitmap is a native surface; dropping the reference frees nothing
     }
 
     /// <summary>Switch machine models: tear the current machine down (persisting
@@ -150,8 +147,9 @@ public partial class MainWindow : Window
     /// model's remembered ROM if it is still around.</summary>
     private void SwitchModel(string model)
     {
-        if (_settings.Model == model) return;
+        if (_settings.Model == model) { UpdateUi(); return; }
         Log.Line($"model switch: {_settings.Model} -> {model}");
+        ReleaseKeys();
         _emulator.Dispose();
         _settings.Model = model;
         _settings.Save();
@@ -164,9 +162,9 @@ public partial class MainWindow : Window
             LoadRom(_settings.ModelLastRom!);
     }
 
-    private void ModelClassic_Click(object sender, RoutedEventArgs e) => SwitchModel("classic");
-    private void ModelIifx_Click(object sender, RoutedEventArgs e) => SwitchModel("iifx");
-    private void ModelQuadra_Click(object sender, RoutedEventArgs e) => SwitchModel("quadra650");
+    private void ModelClassic_Click(object? sender, RoutedEventArgs e) => SwitchModel("classic");
+    private void ModelIifx_Click(object? sender, RoutedEventArgs e) => SwitchModel("iifx");
+    private void ModelQuadra_Click(object? sender, RoutedEventArgs e) => SwitchModel("quadra650");
 
     /// <summary>Fill the Monitor menu from the displays the machine can drive.
     /// Built from the core's own list so the menu cannot drift from what the
@@ -174,8 +172,8 @@ public partial class MainWindow : Window
     private void BuildMonitorMenu()
     {
         // Nothing built from the native core may be allowed to stop the window
-        // from opening. This runs in the constructor, and an older DLL without
-        // the display list took the whole application down with it.
+        // from opening. This runs in the constructor, and an older library
+        // without the display list took the whole application down with it.
         try
         {
             MonitorMenu.Items.Clear();
@@ -186,7 +184,8 @@ public partial class MainWindow : Window
                 {
                     Header = $"Apple {name} — {w}×{h}",
                     Tag = name,
-                    IsCheckable = true,
+                    ToggleType = MenuItemToggleType.Radio,
+                    GroupName = "monitor",
                     IsChecked = name == current,
                 };
                 item.Click += Monitor_Click;
@@ -200,7 +199,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void Monitor_Click(object sender, RoutedEventArgs e)
+    private void Monitor_Click(object? sender, RoutedEventArgs e)
     {
         if (sender is not MenuItem item || item.Tag is not string name) return;
         if (_settings.MonitorQuadra == name) { BuildMonitorMenu(); return; }
@@ -221,27 +220,53 @@ public partial class MainWindow : Window
         UpdateUi();
     }
 
+    // The animation-frame callback must re-arm itself every time. A throw that
+    // escaped it would end the display loop for good while the machine keeps
+    // running behind a frozen picture, so a failure is logged and the loop goes on.
+    private void OnAnimationFrame(TimeSpan _)
+    {
+        if (_closed) return;
+        try
+        {
+            Tick();
+        }
+        catch (Exception ex)
+        {
+            if (!_tickFaultLogged) Log.Line("frame tick failed: " + ex);
+            _tickFaultLogged = true;
+        }
+        RequestAnimationFrame(OnAnimationFrame);
+    }
+
     private void Tick()
     {
-        // Coalesce high-poll-rate host mice to the display cadence. This keeps
-        // WM_INPUT non-blocking while still delivering every relative count to
-        // the emulated ADB mouse before the next displayed guest frame.
+        // Coalesce host pointer motion to the display cadence, delivering every
+        // relative count to the emulated ADB mouse before the next displayed
+        // guest frame.
         FlushMouseMotion();
         // Display only. The emulator produces frames (and audio) on its own thread;
         // copy the most recent one and blit it. TryGetFrame returns false when
         // nothing new has been produced since the previous refresh.
         int w = _emulator.ScreenWidth, h = _emulator.ScreenHeight;
         // A machine can come up on a different display than the window was
-        // built for. Re-fit rather than write past the bitmap: this runs from
-        // the render handler, where an exception takes the application down.
-        if (_bitmap.PixelWidth != w || _bitmap.PixelHeight != h)
+        // built for. Re-fit rather than write past the bitmap.
+        if (_bitmap is null || _bitmap.PixelSize.Width != w || _bitmap.PixelSize.Height != h)
         {
             RebuildScreen();
             ApplyScale();
             return;
         }
         if (_emulator.TryGetFrame(_bgra))
-            _bitmap.WritePixels(new Int32Rect(0, 0, w, h), _bgra, w * 4, 0);
+        {
+            using (ILockedFramebuffer fb = _bitmap.Lock())
+                CopyFrame(fb, w, h);
+            ScreenImage.InvalidateVisual();
+            if (!_firstFrameLogged)
+            {
+                _firstFrameLogged = true;
+                Log.Line($"display: first guest frame shown ({w}x{h})");
+            }
+        }
         // The machine ejects disks on its own; keep the menus and status honest.
         if (_emulator.ConsumeDiskStateChanged())
         {
@@ -259,45 +284,59 @@ public partial class MainWindow : Window
     }
     private long _speedShownAt;
 
-    [DllImport("winmm.dll")] private static extern uint timeBeginPeriod(uint ms);
-    [DllImport("winmm.dll")] private static extern uint timeEndPeriod(uint ms);
+    private void CopyFrame(ILockedFramebuffer fb, int w, int h)
+    {
+        int stride = w * 4;
+        if (fb.RowBytes == stride)
+        {
+            Marshal.Copy(_bgra, 0, fb.Address, stride * h);
+            return;
+        }
+        for (int y = 0; y < h; y++)
+            Marshal.Copy(_bgra, y * stride, fb.Address + y * fb.RowBytes, stride);
+    }
 
     // ---- input ----
     private void WireInput()
     {
-        _baseTitle = Title;
-        Deactivated += (_, _) => UnlockMouse();   // never leave the pointer trapped
-
-        // Relative ("captured") mouse. On the first click we lock the pointer to
-        // the window, hide the host cursor, and feed the Mac raw motion deltas,
-        // re-centering the OS cursor after each move so it can travel forever
-        // without hitting a screen edge. Middle-click (or losing focus) releases
-        // it. This bypasses mapping the absolute cursor through the Viewbox scale,
-        // which shrank motion and truncated sub-pixel movement away in the int cast.
-        ScreenImage.MouseMove += (_, _) =>
+        _baseTitle = Title ?? "OpenMac";
+        Deactivated += (_, _) =>
         {
-            // Raw Input does not include SetCursorPos's synthetic movement and
-            // is the normal path. Retain the old calculation only as a fallback
-            // for a Windows configuration that refuses device registration.
-            if (_rawMouseRegistered) return;
-            if (!_mouseLocked || !_emulator.IsRomLoaded) return;
-            if (!GetCursorPos(out POINT pt)) return;
-            int dx = pt.X - _lockCx, dy = pt.Y - _lockCy;
-            if (dx == 0 && dy == 0) return;                   // the warp-back itself
-            QueueMouseMotion(dx, dy, "legacy");
-            SetCursorPos(_lockCx, _lockCy);                   // warp back to centre
+            UnlockMouse();   // never leave the pointer trapped
+            ReleaseKeys();
         };
-        ScreenImage.MouseLeftButtonDown += (_, e) =>
+
+        // Captured mouse. On the first click the host pointer is hidden over the
+        // screen and the Mac is fed relative motion, measured in its own pixels.
+        // Middle-click (or losing focus) releases it.
+        ScreenImage.PointerMoved += (_, e) =>
         {
+            if (!_mouseLocked || !_emulator.IsRomLoaded) return;
+            Point p = e.GetPosition(ScreenImage);
+            if (_lastPointer is { } last)
+                QueueMouseMotion(p.X - last.X, p.Y - last.Y, "pointer");
+            _lastPointer = p;
+        };
+        ScreenImage.PointerPressed += (_, e) =>
+        {
+            PointerPointProperties props = e.GetCurrentPoint(ScreenImage).Properties;
+            if (props.IsMiddleButtonPressed)
+            {
+                UnlockMouse();
+                e.Handled = true;
+                return;
+            }
+            if (!props.IsLeftButtonPressed) return;
             ScreenImage.Focus();
-            if (!_mouseLocked) { LockMouse(); e.Handled = true; return; }
+            if (!_mouseLocked) { LockMouse(e.GetPosition(ScreenImage)); e.Handled = true; return; }
             if (_guestMouseDown) return;
             FlushMouseMotion();
             _guestMouseDown = true;
             _emulator.MouseButton(true);
         };
-        ScreenImage.MouseLeftButtonUp += (_, e) =>
+        ScreenImage.PointerReleased += (_, e) =>
         {
+            if (e.InitialPressMouseButton != MouseButton.Left) return;
             // A release belonging to the capture gesture has no matching guest
             // press. A real guest click is forwarded exactly once.
             if (!_guestMouseDown) { e.Handled = true; return; }
@@ -305,36 +344,45 @@ public partial class MainWindow : Window
             _guestMouseDown = false;
             _emulator.MouseButton(false);
         };
-        ScreenImage.MouseDown += (_, e) =>
-        {
-            if (e.ChangedButton == MouseButton.Middle)
-            {
-                UnlockMouse();
-                e.Handled = true;
-            }
-        };
-        ScreenImage.LostMouseCapture += (_, _) =>
-        {
-            if (_mouseLocked && !ReferenceEquals(Mouse.Captured, ScreenImage))
-                UnlockMouse();
-        };
 
-        KeyDown += (_, e) =>
-        {
-            if (e.Key == Key.F11) { ToggleFullscreen(); e.Handled = true; return; }
-            if (e.Key == Key.Escape && _fullscreen) { ToggleFullscreen(); e.Handled = true; return; }
-            // A real ADB keyboard reports one DOWN per press; auto-repeat is the
-            // guest OS's job (KeyThresh). Forwarding host repeats gives the Mac
-            // phantom transitions, which garbles anything that counts keystrokes.
-            if (e.IsRepeat) { e.Handled = true; return; }
-            int code = AdbKeys.Map(e.SystemKey != Key.None ? e.SystemKey : e.Key);
-            if (code >= 0) _emulator.KeyEvent(code, true);
-        };
-        KeyUp += (_, e) =>
-        {
-            int code = AdbKeys.Map(e.SystemKey != Key.None ? e.SystemKey : e.Key);
-            if (code >= 0) _emulator.KeyEvent(code, false);
-        };
+        // Keys are taken before the focused control sees them, so Tab and the
+        // arrows reach the Mac instead of moving focus around the window.
+        AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
+        AddHandler(KeyUpEvent, OnKeyUp, RoutingStrategies.Tunnel);
+
+        AddHandler(DragDrop.DragOverEvent, Window_DragOver);
+        AddHandler(DragDrop.DropEvent, Window_Drop);
+    }
+
+    private void OnKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.F11) { ToggleFullscreen(); e.Handled = true; return; }
+        if (e.Key == Key.Escape && _fullscreen) { ToggleFullscreen(); e.Handled = true; return; }
+        // An open menu is being driven from the keyboard; leave its keys alone.
+        if (MainMenu.IsOpen || !_emulator.IsRomLoaded) return;
+        int code = AdbKeys.Map(e.PhysicalKey);
+        if (code < 0) return;
+        e.Handled = true;
+        // A real ADB keyboard reports one DOWN per press; auto-repeat is the
+        // guest OS's job (KeyThresh). Forwarding host repeats gives the Mac
+        // phantom transitions, which garbles anything that counts keystrokes.
+        if (_keysDown.Add(code)) _emulator.KeyEvent(code, true);
+    }
+
+    private void OnKeyUp(object? sender, KeyEventArgs e)
+    {
+        int code = AdbKeys.Map(e.PhysicalKey);
+        if (code < 0 || !_keysDown.Remove(code)) return;
+        e.Handled = true;
+        _emulator.KeyEvent(code, false);
+    }
+
+    /// <summary>Lift every key still held, so losing focus mid-combo cannot
+    /// leave the Mac with a stuck modifier.</summary>
+    private void ReleaseKeys()
+    {
+        foreach (int code in _keysDown) _emulator.KeyEvent(code, false);
+        _keysDown.Clear();
     }
 
     // ---- Key Combos menu ----
@@ -350,7 +398,7 @@ public partial class MainWindow : Window
         ["z"] = 0x06, ["1"] = 0x12, ["2"] = 0x13, ["3"] = 0x14,
     };
 
-    private async void SendCombo_Click(object sender, RoutedEventArgs e)
+    private async void SendCombo_Click(object? sender, RoutedEventArgs e)
     {
         if (!_emulator.IsRomLoaded) return;
         if ((sender as MenuItem)?.Tag is not string combo) return;
@@ -368,134 +416,44 @@ public partial class MainWindow : Window
     }
 
     // ---- relative mouse capture ----
-    private void InitializeRawMouse()
-    {
-        IntPtr hwnd = new WindowInteropHelper(this).Handle;
-        _windowSource = HwndSource.FromHwnd(hwnd);
-        _windowSource?.AddHook(WindowProc);
-
-        var devices = new[]
-        {
-            new RAWINPUTDEVICE
-            {
-                UsagePage = 0x01,             // HID generic desktop controls
-                Usage = 0x02,                 // mouse
-                Flags = 0,                    // foreground only; keep legacy buttons
-                Target = hwnd,
-            },
-        };
-        _rawMouseRegistered = RegisterRawInputDevices(
-            devices, (uint)devices.Length, (uint)Marshal.SizeOf<RAWINPUTDEVICE>());
-        if (_rawMouseRegistered)
-            Log.Line($"input: raw relative mouse registered (packet={Marshal.SizeOf<RAWINPUT>()} bytes)");
-        else
-            Log.Line($"input: raw mouse registration failed ({Marshal.GetLastWin32Error()}); using legacy motion");
-    }
-
-    private void ShutdownRawMouse()
-    {
-        if (_rawMouseRegistered)
-        {
-            var devices = new[]
-            {
-                new RAWINPUTDEVICE
-                {
-                    UsagePage = 0x01,
-                    Usage = 0x02,
-                    Flags = RIDEV_REMOVE,
-                    Target = IntPtr.Zero,
-                },
-            };
-            RegisterRawInputDevices(
-                devices, (uint)devices.Length, (uint)Marshal.SizeOf<RAWINPUTDEVICE>());
-            _rawMouseRegistered = false;
-        }
-        _windowSource?.RemoveHook(WindowProc);
-        _windowSource = null;
-    }
-
-    private IntPtr WindowProc(IntPtr hwnd, int message, IntPtr wParam,
-                              IntPtr lParam, ref bool handled)
-    {
-        if (message != WM_INPUT || !_mouseLocked || !_emulator.IsRomLoaded)
-            return IntPtr.Zero;
-
-        uint size = (uint)Marshal.SizeOf<RAWINPUT>();
-        RAWINPUT input = default;
-        uint read = GetRawInputData(lParam, RID_INPUT, ref input, ref size,
-                                    (uint)Marshal.SizeOf<RAWINPUTHEADER>());
-        if (read == uint.MaxValue || input.Header.Type != RIM_TYPEMOUSE)
-            return IntPtr.Zero;
-
-        int dx = input.Mouse.LastX;
-        int dy = input.Mouse.LastY;
-        if ((input.Mouse.Flags & MOUSE_MOVE_ABSOLUTE) != 0)
-        {
-            // Absolute pointing devices report a normalized position instead
-            // of counts. The Windows cursor has already resolved that position,
-            // so turn it back into a relative delta from our lock point.
-            if (!GetCursorPos(out POINT point)) return IntPtr.Zero;
-            dx = point.X - _lockCx;
-            dy = point.Y - _lockCy;
-        }
-        if (dx == 0 && dy == 0) return IntPtr.Zero;
-
-        QueueMouseMotion(dx, dy, "raw");
-        // Warping the legacy pointer does not manufacture Raw Input packets.
-        // Keeping it centred prevents an invisible host cursor reaching another
-        // monitor while the raw HID deltas continue without an artificial edge.
-        SetCursorPos(_lockCx, _lockCy);
-        return IntPtr.Zero;                  // WPF must still perform WM_INPUT cleanup
-    }
-
-    private void QueueMouseMotion(int dx, int dy, string source)
+    private void QueueMouseMotion(double dx, double dy, string source)
     {
         _pendingMouseDx += dx;
         _pendingMouseDy += dy;
-        _capturedMouseDx += dx;
-        _capturedMouseDy += dy;
         ++_capturedMotionPackets;
         if (_captureMotionLogged) return;
         _captureMotionLogged = true;
-        Log.Line($"input: first {source} motion dx={dx} dy={dy} backend={_emulator.BackendName}");
+        Log.Line($"input: first {source} motion dx={dx:0.##} dy={dy:0.##} backend={_emulator.BackendName}");
     }
 
     private void FlushMouseMotion()
     {
-        long dx = _pendingMouseDx;
-        long dy = _pendingMouseDy;
-        _pendingMouseDx = _pendingMouseDy = 0;
-        if (!_mouseLocked || !_emulator.IsRomLoaded || (dx == 0 && dy == 0)) return;
-
-        // A physically impossible multi-billion-count packet is the only way
-        // these casts can split; retaining the remainder makes even that lossless.
-        while (dx != 0 || dy != 0)
+        if (!_mouseLocked || !_emulator.IsRomLoaded)
         {
-            int partX = (int)Math.Clamp(dx, int.MinValue, int.MaxValue);
-            int partY = (int)Math.Clamp(dy, int.MinValue, int.MaxValue);
-            _emulator.MouseMove(partX, partY, _guestMouseDown);
-            dx -= partX;
-            dy -= partY;
-        }
-    }
-
-    private void LockMouse()
-    {
-        if (_mouseLocked) return;
-        if (!Mouse.Capture(ScreenImage, CaptureMode.Element))
-        {
-            Log.Line("input: pointer capture refused by WPF");
+            _pendingMouseDx = _pendingMouseDy = 0;
             return;
         }
+        int dx = (int)Math.Truncate(_pendingMouseDx);
+        int dy = (int)Math.Truncate(_pendingMouseDy);
+        if (dx == 0 && dy == 0) return;
+        _pendingMouseDx -= dx;
+        _pendingMouseDy -= dy;
+        _capturedMouseDx += dx;
+        _capturedMouseDy += dy;
+        _emulator.MouseMove(dx, dy, _guestMouseDown);
+    }
+
+    private void LockMouse(Point at)
+    {
+        if (_mouseLocked) return;
         _mouseLocked = true;
         _guestMouseDown = false;
         _captureMotionLogged = false;
+        _lastPointer = at;
         _pendingMouseDx = _pendingMouseDy = 0;
         _capturedMotionPackets = 0;
         _capturedMouseDx = _capturedMouseDy = 0;
-        ScreenImage.Cursor = Cursors.None;
-        RecenterCursor();
-        if (_keyHook != null) _keyHook.Enabled = true;   // Cmd(Win)+Q, Alt+Tab etc. now reach the Mac
+        ScreenImage.Cursor = HiddenCursor;
         Title = _baseTitle + "   —   input captured: keys go to the Mac (middle-click to release)";
         Log.Line($"input: pointer captured backend={_emulator.BackendName}");
     }
@@ -510,77 +468,12 @@ public partial class MainWindow : Window
             _emulator.MouseButton(false);
         _guestMouseDown = false;
         _mouseLocked = false;
-        if (_keyHook != null) { _keyHook.Enabled = false; _keyHook.ReleaseAll(); }
-        if (ScreenImage.IsMouseCaptured) ScreenImage.ReleaseMouseCapture();
+        _lastPointer = null;
         ScreenImage.Cursor = null;
         Title = _baseTitle;
         Log.Line($"input: pointer released packets={_capturedMotionPackets} "
-                 + $"delta={_capturedMouseDx}/{_capturedMouseDy} "
-                 + $"source={(_rawMouseRegistered ? "raw" : "legacy")}");
+                 + $"delta={_capturedMouseDx}/{_capturedMouseDy} source=pointer");
     }
-
-    // Park the OS cursor at the window's physical centre and remember that point;
-    // motion deltas are measured from it and the cursor is warped back each move.
-    private void RecenterCursor()
-    {
-        IntPtr hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-        if (hwnd != IntPtr.Zero && GetWindowRect(hwnd, out RECT r))
-        {
-            _lockCx = (r.Left + r.Right) / 2;
-            _lockCy = (r.Top + r.Bottom) / 2;
-            SetCursorPos(_lockCx, _lockCy);
-        }
-    }
-
-    [StructLayout(LayoutKind.Sequential)] private struct POINT { public int X, Y; }
-    [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RAWINPUTDEVICE
-    {
-        public ushort UsagePage;
-        public ushort Usage;
-        public uint Flags;
-        public IntPtr Target;
-    }
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RAWINPUTHEADER
-    {
-        public uint Type;
-        public uint Size;
-        public IntPtr Device;
-        public IntPtr WParam;
-    }
-    [StructLayout(LayoutKind.Explicit, Size = 24)]
-    private struct RAWMOUSE
-    {
-        [FieldOffset(0)] public ushort Flags;
-        [FieldOffset(4)] public uint Buttons;
-        [FieldOffset(8)] public uint RawButtons;
-        [FieldOffset(12)] public int LastX;
-        [FieldOffset(16)] public int LastY;
-        [FieldOffset(20)] public uint ExtraInformation;
-    }
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RAWINPUT
-    {
-        public RAWINPUTHEADER Header;
-        public RAWMOUSE Mouse;
-    }
-    private const int WM_INPUT = 0x00FF;
-    private const uint RID_INPUT = 0x10000003;
-    private const uint RIM_TYPEMOUSE = 0;
-    private const ushort MOUSE_MOVE_ABSOLUTE = 0x0001;
-    private const uint RIDEV_REMOVE = 0x00000001;
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool RegisterRawInputDevices(
-        [In] RAWINPUTDEVICE[] devices, uint count, uint size);
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern uint GetRawInputData(
-        IntPtr rawInput, uint command, ref RAWINPUT data, ref uint size, uint headerSize);
-    [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
-    [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT p);
-    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
 
     // ---- machine lifecycle ----
     private void LoadRom(string path)
@@ -621,13 +514,14 @@ public partial class MainWindow : Window
                  + $"floppies {(_settings.WriteProtectFloppies ? "write-protected" : "writable")})");
         try
         {
+            ReleaseKeys();
             _emulator.LoadRom(path, _settings.ModelRamMB, _settings.BootRomDisk);
             // The machine's screen is only known once it exists -- the monitor
             // on its video port decides it. Match the framebuffer to it here,
             // or a display larger than the one this window was built for gets
             // written past the end of the bitmap on the very next frame.
-            if (_bitmap is null || _bitmap.PixelWidth != _emulator.ScreenWidth ||
-                _bitmap.PixelHeight != _emulator.ScreenHeight)
+            if (_bitmap is null || _bitmap.PixelSize.Width != _emulator.ScreenWidth ||
+                _bitmap.PixelSize.Height != _emulator.ScreenHeight)
             {
                 RebuildScreen();
                 ApplyScale();
@@ -727,7 +621,7 @@ public partial class MainWindow : Window
         UpdateUi();
     }
 
-    private void OpenRom_Click(object sender, RoutedEventArgs e)
+    private void OpenRom_Click(object? sender, RoutedEventArgs e)
     {
         if (FilePicker.Open(this, _settings, FilePicker.Rom, "Open Macintosh ROM",
                             "Macintosh ROM (*.rom;*.bin)|*.rom;*.bin|All files (*.*)|*.*",
@@ -735,7 +629,7 @@ public partial class MainWindow : Window
             LoadRom(path);
     }
 
-    private void IifxVideoRom_Click(object sender, RoutedEventArgs e)
+    private void IifxVideoRom_Click(object? sender, RoutedEventArgs e)
     {
         if (!_settings.IsIifx) return;
         if (FilePicker.Open(this, _settings, FilePicker.VideoRom,
@@ -768,14 +662,15 @@ public partial class MainWindow : Window
         }
         foreach (string path in _settings.RecentRoms)
         {
-            var item = new MenuItem { Header = Path.GetFileName(path), ToolTip = path };
+            var item = new MenuItem { Header = Path.GetFileName(path) };
+            ToolTip.SetTip(item, path);
             string captured = path;
             item.Click += (_, _) => { if (File.Exists(captured)) LoadRom(captured); };
             RecentMenu.Items.Add(item);
         }
     }
 
-    private void Reset_Click(object sender, RoutedEventArgs e)
+    private void Reset_Click(object? sender, RoutedEventArgs e)
     {
         // Full restart: reload the ROM so the SCSI bus is re-scanned and any hard disk
         // re-mounts (a warm reset leaves the prior boot's mount state behind).
@@ -783,17 +678,17 @@ public partial class MainWindow : Window
         else _emulator.Reset();
     }
 
-    private void Memory_Click(object sender, RoutedEventArgs e)
+    private void Memory_Click(object? sender, RoutedEventArgs e)
     {
-        _settings.RamMB = int.Parse((string)((MenuItem)sender).Tag);
+        _settings.RamMB = int.Parse((string)((MenuItem)sender!).Tag!);
         _settings.Save();
         if (_emulator.IsRomLoaded && _emulator.RomPath is { } rom) LoadRom(rom);
         UpdateUi();
     }
 
-    private void MemoryLarge_Click(object sender, RoutedEventArgs e)
+    private void MemoryLarge_Click(object? sender, RoutedEventArgs e)
     {
-        int ram = int.Parse((string)((MenuItem)sender).Tag);
+        int ram = int.Parse((string)((MenuItem)sender!).Tag!);
         if (_settings.IsIifx) _settings.RamMBIifx = ram;
         else _settings.RamMBQuadra = ram;
         _settings.Save();
@@ -801,15 +696,15 @@ public partial class MainWindow : Window
         UpdateUi();
     }
 
-    private void MemoryIifx_Click(object sender, RoutedEventArgs e)
+    private void MemoryIifx_Click(object? sender, RoutedEventArgs e)
     {
-        _settings.RamMBIifx = int.Parse((string)((MenuItem)sender).Tag);
+        _settings.RamMBIifx = int.Parse((string)((MenuItem)sender!).Tag!);
         _settings.Save();
         if (_emulator.IsRomLoaded && _emulator.RomPath is { } rom) LoadRom(rom);
         UpdateUi();
     }
 
-    private void BootRomDisk_Click(object sender, RoutedEventArgs e)
+    private void BootRomDisk_Click(object? sender, RoutedEventArgs e)
     {
         _settings.BootRomDisk = !_settings.BootRomDisk;
         _settings.Save();
@@ -818,7 +713,7 @@ public partial class MainWindow : Window
         UpdateUi();
     }
 
-    private void BootExtensionsOff_Click(object sender, RoutedEventArgs e)
+    private void BootExtensionsOff_Click(object? sender, RoutedEventArgs e)
     {
         _settings.BootExtensionsOff = !_settings.BootExtensionsOff;
         _settings.Save();
@@ -829,8 +724,8 @@ public partial class MainWindow : Window
 
     // ---- extensions-off boot: the virtual held Shift ----
     // System 6/7 samples Shift early in the boot (the "Extensions off" welcome);
-    // holding it that long on the real keyboard trips Windows' sticky/filter-keys
-    // accessibility hooks. So the hold happens inside the machine instead: one
+    // holding it that long on the real keyboard trips the desktop's sticky-keys
+    // accessibility setting. So the hold happens inside the machine instead: one
     // Shift-down as the boot begins, one Shift-up 25 s later — past the check on
     // the slowest machine here (IIfx, 128 MB RAM test), before desktop typing.
     // The generation counter keeps a restart mid-hold from releasing the new
@@ -873,7 +768,7 @@ public partial class MainWindow : Window
     // disk is written back to its file).
     private string? _floppyWaiting;
 
-    private void InsertFloppy_Click(object sender, RoutedEventArgs e)
+    private void InsertFloppy_Click(object? sender, RoutedEventArgs e)
     {
         if (FilePicker.Open(this, _settings, FilePicker.Floppy, "Insert Floppy",
                             DiskImageFilter, _settings.ModelLastFloppy) is { } path)
@@ -909,7 +804,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void EjectFloppy_Click(object sender, RoutedEventArgs e)
+    private void EjectFloppy_Click(object? sender, RoutedEventArgs e)
     {
         _emulator.EjectFloppy();
         _settings.ModelLastFloppy = null;
@@ -926,9 +821,9 @@ public partial class MainWindow : Window
     // volume read-write writes to it whether or not anyone asked -- the System
     // clears the volume-unmounted bit in the MDB as its first act. Unlocking is
     // a deliberate choice to let the Mac keep what it writes.
-    private void WriteProtectFloppies_Click(object sender, RoutedEventArgs e)
+    private void WriteProtectFloppies_Click(object? sender, RoutedEventArgs e)
     {
-        bool on = WriteProtectItem.IsChecked;
+        bool on = !_settings.WriteProtectFloppies;
         _settings.WriteProtectFloppies = on;
         _settings.Save();
         _emulator.WriteProtectFloppies = on;
@@ -942,9 +837,9 @@ public partial class MainWindow : Window
     }
 
     // thrown out by the ROM's own port probe, so put one in after booting.
-    private void ExternalDrive_Click(object sender, RoutedEventArgs e)
+    private void ExternalDrive_Click(object? sender, RoutedEventArgs e)
     {
-        bool on = ExternalDriveItem.IsChecked;
+        bool on = !_emulator.ExternalDriveAttached;
         _emulator.SetExternalDrive(on);
         if (!on) _settings.LastExternalFloppy = null;
         _settings.ExternalDrive = on;
@@ -957,7 +852,7 @@ public partial class MainWindow : Window
         UpdateUi();
     }
 
-    private void InsertExternalFloppy_Click(object sender, RoutedEventArgs e)
+    private void InsertExternalFloppy_Click(object? sender, RoutedEventArgs e)
     {
         if (FilePicker.Open(this, _settings, FilePicker.Floppy,
                             "Insert Floppy (External Drive)", DiskImageFilter,
@@ -973,7 +868,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void EjectExternalFloppy_Click(object sender, RoutedEventArgs e)
+    private void EjectExternalFloppy_Click(object? sender, RoutedEventArgs e)
     {
         _emulator.EjectExternalFloppy();
         _settings.LastExternalFloppy = null;
@@ -981,7 +876,7 @@ public partial class MainWindow : Window
         UpdateUi();
     }
 
-    private void AttachHardDisk_Click(object sender, RoutedEventArgs e)
+    private void AttachHardDisk_Click(object? sender, RoutedEventArgs e)
     {
         if (FilePicker.Open(this, _settings, FilePicker.HardDisk, "Attach Hard Disk",
                             "Disk image (*.img;*.dsk;*.hda)|*.img;*.dsk;*.hda|All files (*.*)|*.*",
@@ -989,11 +884,11 @@ public partial class MainWindow : Window
             AttachHardDisk(path);
     }
 
-    private void CreateHardDisk_Click(object sender, RoutedEventArgs e)
+    private void CreateHardDisk_Click(object? sender, RoutedEventArgs e)
     {
         Log.Line("create hard disk: dialog opened");
-        var dlg = new CreateHardDiskDialog(_settings) { Owner = this };
-        bool made = dlg.ShowDialog() == true && dlg.CreatedPath is not null;
+        var dlg = new CreateHardDiskDialog(_settings);
+        bool made = dlg.ShowModal(this) == true && dlg.CreatedPath is not null;
         Log.Line($"create hard disk: dialog closed, created={made}");
         if (made) AttachHardDisk(dlg.CreatedPath!);
     }
@@ -1018,7 +913,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void DetachHardDisk_Click(object sender, RoutedEventArgs e)
+    private void DetachHardDisk_Click(object? sender, RoutedEventArgs e)
     {
         _emulator.DetachHardDisk();
         _settings.ModelLastHardDisk = null;
@@ -1030,9 +925,9 @@ public partial class MainWindow : Window
     // The drive is a SCSI device found during startup's bus scan, so attaching
     // one wants a restart; a disc put in later is noticed by the Apple CD
     // software's own polling, so inserting never does.
-    private void CdDrive_Click(object sender, RoutedEventArgs e)
+    private void CdDrive_Click(object? sender, RoutedEventArgs e)
     {
-        bool on = CdDriveItem.IsChecked;
+        bool on = !_emulator.CdRomAttached;
         _emulator.SetCdRomAttached(on);
         if (!on) _settings.LastCd = null;
         _settings.CdRomAttached = on;
@@ -1048,7 +943,7 @@ public partial class MainWindow : Window
         UpdateUi();
     }
 
-    private void InsertCd_Click(object sender, RoutedEventArgs e)
+    private void InsertCd_Click(object? sender, RoutedEventArgs e)
     {
         if (FilePicker.Open(this, _settings, FilePicker.Cd, "Insert CD Image",
                 "CD image (*.iso;*.cdr;*.toast;*.dmg;*.bin;*.cue;*.mdf;*.nrg;*.img;*.dsk)|*.iso;*.cdr;*.toast;*.dmg;*.bin;*.cue;*.mdf;*.nrg;*.img;*.dsk|"
@@ -1091,7 +986,7 @@ public partial class MainWindow : Window
         return false;
     }
 
-    private void EjectCd_Click(object sender, RoutedEventArgs e)
+    private void EjectCd_Click(object? sender, RoutedEventArgs e)
     {
         _emulator.EjectCd();
         _settings.LastCd = null;
@@ -1100,9 +995,9 @@ public partial class MainWindow : Window
     }
 
     // ---- networking ----
-    private void Networking_Click(object sender, RoutedEventArgs e)
+    private void Networking_Click(object? sender, RoutedEventArgs e)
     {
-        bool on = NetworkingItem.IsChecked;
+        bool on = !_emulator.NetworkingEnabled;
         _emulator.SetNetworking(on);
         _settings.Networking = on;
         _settings.Save();
@@ -1134,9 +1029,9 @@ public partial class MainWindow : Window
     /// plainly named folder under Documents, made on demand.</summary>
     private string? DropBoxFolder() => ChosenFolder() ?? DropBoxSeat.EnsureDefaultFolder();
 
-    private void DropBoxEnabled_Click(object sender, RoutedEventArgs e)
+    private void DropBoxEnabled_Click(object? sender, RoutedEventArgs e)
     {
-        bool want = DropBoxEnabledItem.IsChecked;
+        bool want = !_settings.DropBox;
         if (!want)
         {
             _emulator.DetachFolderDisk();
@@ -1204,23 +1099,19 @@ public partial class MainWindow : Window
         }
     }
 
-    private void DropBoxChooseFolder_Click(object sender, RoutedEventArgs e)
+    private void DropBoxChooseFolder_Click(object? sender, RoutedEventArgs e)
     {
-        var dlg = new Microsoft.Win32.OpenFolderDialog
-        {
-            Title = "Choose the Drop Box Folder",
-        };
         string? current = DropBoxFolder();
-        if (current is not null && Directory.Exists(current)) dlg.InitialDirectory = current;
-        if (dlg.ShowDialog(this) != true) return;
+        if (FilePicker.OpenFolder(this, "Choose the Drop Box Folder", current) is not { } chosen)
+            return;
 
-        _settings.LastFolderDisk = dlg.FolderName;
+        _settings.LastFolderDisk = chosen;
         _settings.Save();
         if (!_emulator.IsRomLoaded || !_settings.DropBox) { UpdateUi(); return; }
         if (_emulator.FolderDiskPath is null)
         {
             // Nothing on the seat yet: a plain attach is safe.
-            AttachDropBox(dlg.FolderName, offerRestart: true);
+            AttachDropBox(chosen, offerRestart: true);
             return;
         }
         // A volume is already mounted from the old folder, so the move has to go
@@ -1228,16 +1119,16 @@ public partial class MainWindow : Window
         // Mac still holds the old volume would leave it reading the old catalog
         // against the new disk's blocks -- and the outgoing folder would never
         // get back what the guest saved into it.
-        if (!_emulator.RetargetFolderDisk(dlg.FolderName, out string error))
+        if (!_emulator.RetargetFolderDisk(chosen, out string error))
         {
-            Log.Line($"drop box move refused: {dlg.FolderName} -- {error}");
+            Log.Line($"drop box move refused: {chosen} -- {error}");
             MessageBox.Show(this, "The drop box did not move.\n\n" + error,
                             "Drop Box", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         UpdateUi();
     }
 
-    private void DropBoxOpenFolder_Click(object sender, RoutedEventArgs e)
+    private void DropBoxOpenFolder_Click(object? sender, RoutedEventArgs e)
     {
         string? folder = DropBoxFolder();
         if (folder is null) return;
@@ -1249,7 +1140,7 @@ public partial class MainWindow : Window
         catch (Exception ex) { Log.Line("could not open the drop box folder: " + ex.Message); }
     }
 
-    private void DropBoxRepublish_Click(object sender, RoutedEventArgs e)
+    private void DropBoxRepublish_Click(object? sender, RoutedEventArgs e)
     {
         if (!_emulator.RepublishFolderDisk(null, out string error))
             MessageBox.Show(this, "Nothing to refresh.\n\n" + error,
@@ -1258,7 +1149,7 @@ public partial class MainWindow : Window
     }
 
     // ---- folder disk ----
-    private void OpenFolderDisk_Click(object sender, RoutedEventArgs e)
+    private void OpenFolderDisk_Click(object? sender, RoutedEventArgs e)
     {
         if (!_emulator.IsRomLoaded)
         {
@@ -1274,15 +1165,13 @@ public partial class MainWindow : Window
                 "Folder Disk", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
-        var dlg = new Microsoft.Win32.OpenFolderDialog { Title = "Open Host Folder as Disk" };
-        if (!string.IsNullOrEmpty(_settings.LastFolderDisk) &&
-            Directory.Exists(_settings.LastFolderDisk))
-            dlg.InitialDirectory = _settings.LastFolderDisk;
-        if (dlg.ShowDialog(this) != true) return;
+        if (FilePicker.OpenFolder(this, "Open Host Folder as Disk", _settings.LastFolderDisk)
+            is not { } folder)
+            return;
 
-        if (_emulator.AttachFolderDisk(dlg.FolderName, out string error))
+        if (_emulator.AttachFolderDisk(folder, out string error))
         {
-            _settings.LastFolderDisk = dlg.FolderName;
+            _settings.LastFolderDisk = folder;
             _settings.Save();
             UpdateUi();
             // The volume mounts on its own a few seconds after the System is
@@ -1303,13 +1192,13 @@ public partial class MainWindow : Window
         }
         else
         {
-            Log.Line($"folder disk refused: {dlg.FolderName} -- {error}");
+            Log.Line($"folder disk refused: {folder} -- {error}");
             MessageBox.Show(this, "The folder did not become a disk.\n\n" + error,
                             "Folder Disk", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
-    private void CloseFolderDisk_Click(object sender, RoutedEventArgs e)
+    private void CloseFolderDisk_Click(object? sender, RoutedEventArgs e)
     {
         _emulator.DetachFolderDisk();   // syncs changes back to the folder first
         _settings.LastFolderDisk = null;
@@ -1340,18 +1229,18 @@ public partial class MainWindow : Window
     private static readonly string[] TransferExtensions =
         { ".sit", ".sea", ".cpt", ".hqx", ".zip", ".lha", ".lzh" };
 
-    private void Window_DragOver(object sender, DragEventArgs e)
+    private void Window_DragOver(object? sender, DragEventArgs e)
     {
-        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop)
+        e.DragEffects = e.DataTransfer.Contains(DataFormat.File)
             ? DragDropEffects.Copy : DragDropEffects.None;
         e.Handled = true;
     }
 
-    private void Window_Drop(object sender, DragEventArgs e)
+    private void Window_Drop(object? sender, DragEventArgs e)
     {
-        if (e.Data.GetData(DataFormats.FileDrop) is not string[] files) return;
-        foreach (string f in files)
-            if (File.Exists(f)) RouteMedia(f);
+        if (e.DataTransfer.TryGetFiles() is not { } items) return;
+        foreach (IStorageItem item in items)
+            if (item.TryGetLocalPath() is { } f && File.Exists(f)) RouteMedia(f);
         UpdateUi();
     }
 
@@ -1687,9 +1576,9 @@ public partial class MainWindow : Window
     }
 
     // ---- view ----
-    private void Scale_Click(object sender, RoutedEventArgs e)
+    private void Scale_Click(object? sender, RoutedEventArgs e)
     {
-        _settings.Scale = int.Parse((string)((MenuItem)sender).Tag);
+        _settings.Scale = int.Parse((string)((MenuItem)sender!).Tag!);
         _settings.Save();
         ApplyScale();
         UpdateUi();
@@ -1698,47 +1587,41 @@ public partial class MainWindow : Window
     private void ApplyScale()
     {
         if (_settings.Scale <= 0 || _fullscreen) return;
-        if (ScreenHost.ActualWidth <= 0) return;
-        double chromeW = ActualWidth - ScreenHost.ActualWidth;
-        double chromeH = ActualHeight - ScreenHost.ActualHeight;
+        if (ScreenHost.Bounds.Width <= 0) return;
+        double chromeW = ClientSize.Width - ScreenHost.Bounds.Width;
+        double chromeH = ClientSize.Height - ScreenHost.Bounds.Height;
         Width = _emulator.ScreenWidth * _settings.Scale + chromeW;
         Height = _emulator.ScreenHeight * _settings.Scale + chromeH;
     }
 
-    private void Fullscreen_Click(object sender, RoutedEventArgs e) => ToggleFullscreen();
+    private void Fullscreen_Click(object? sender, RoutedEventArgs e) => ToggleFullscreen();
 
     private void ToggleFullscreen()
     {
         if (!_fullscreen)
         {
-            _savedStyle = WindowStyle;
             _savedState = WindowState;
-            WindowState = WindowState.Normal;
-            WindowStyle = WindowStyle.None;
-            ResizeMode = ResizeMode.NoResize;
-            WindowState = WindowState.Maximized;
+            WindowState = WindowState.FullScreen;
             _fullscreen = true;
         }
         else
         {
-            WindowStyle = _savedStyle;
-            ResizeMode = ResizeMode.CanResize;
             WindowState = _savedState;
             _fullscreen = false;
             ApplyScale();
         }
     }
 
-    private void Debugger_Click(object sender, RoutedEventArgs e) =>
+    private void Debugger_Click(object? sender, RoutedEventArgs e) =>
         MessageBox.Show(this,
             "A live register/disassembly/backtrace panel will dock here once the native core is "
             + "linked into the GUI.\n\nToday the headless monitor (openmac_trace) already provides "
             + "step-over/step-out, conditional breakpoints, branch tracing, and struct dumps.",
             "Debugger", MessageBoxButton.OK, MessageBoxImage.Information);
 
-    private void About_Click(object sender, RoutedEventArgs e) =>
+    private void About_Click(object? sender, RoutedEventArgs e) =>
         MessageBox.Show(this,
-            "OpenMac\nA from-scratch Macintosh emulator for Windows.\n\n"
+            "OpenMac\nA from-scratch Macintosh emulator for Linux.\n\n"
             + "Macintosh Classic · Macintosh IIfx · Quadra 650\n"
             + "68000, 68030 and 68040 machines with model-specific video, storage, input, audio and PRAM.",
             "About OpenMac", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -1748,7 +1631,7 @@ public partial class MainWindow : Window
     // is looping, and which device it is waiting on. It reads model state
     // only, so it is safe at any moment -- including while the guest is
     // wedged, which is exactly when it is wanted.
-    private void CaptureDiagnostics_Click(object sender, RoutedEventArgs e)
+    private void CaptureDiagnostics_Click(object? sender, RoutedEventArgs e)
     {
         string report;
         try { report = _emulator.DiagnosticReport(); }
@@ -1787,19 +1670,44 @@ public partial class MainWindow : Window
         }
 
         Log.Line("diagnostics captured: " + file);
-        if (MessageBox.Show(this, "Saved:\n" + file + "\n\nShow it in Explorer?",
+        if (MessageBox.Show(this, "Saved:\n" + file + "\n\nShow it in the file manager?",
                 "Capture Diagnostics", MessageBoxButton.YesNo,
                 MessageBoxImage.Information) == MessageBoxResult.Yes)
         {
-            try
-            {
-                System.Diagnostics.Process.Start(
-                    new System.Diagnostics.ProcessStartInfo(
-                        "explorer.exe", "/select,\"" + file + "\"")
-                    { UseShellExecute = true });
-            }
-            catch (Exception ex) { Log.Line("open diagnostics folder failed: " + ex.Message); }
+            Task.Run(() => ShowInFileManager(file));
         }
+    }
+
+    /// <summary>Open the file manager with <paramref name="file"/> selected, through
+    /// the freedesktop FileManager1 interface every major desktop's file manager
+    /// answers. Without one, open the folder that holds it.</summary>
+    private static void ShowInFileManager(string file)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("gdbus") { UseShellExecute = false };
+            foreach (string arg in new[]
+                     {
+                         "call", "--session", "--dest", "org.freedesktop.FileManager1",
+                         "--object-path", "/org/freedesktop/FileManager1",
+                         "--method", "org.freedesktop.FileManager1.ShowItems",
+                         $"['{new Uri(file).AbsoluteUri}']", "",
+                     })
+                psi.ArgumentList.Add(arg);
+            using var process = System.Diagnostics.Process.Start(psi);
+            if (process is not null && process.WaitForExit(5000) && process.ExitCode == 0) return;
+            Log.Line("show in file manager: FileManager1 did not answer; opening the folder instead");
+        }
+        catch (Exception ex)
+        {
+            Log.Line("show in file manager: " + ex.Message + "; opening the folder instead");
+        }
+        try
+        {
+            System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo(Path.GetDirectoryName(file)!) { UseShellExecute = true });
+        }
+        catch (Exception ex) { Log.Line("open diagnostics folder failed: " + ex.Message); }
     }
 
     private static string ReadLogTail(int lines)
@@ -1823,12 +1731,12 @@ public partial class MainWindow : Window
         catch (Exception ex) { return "(log unavailable: " + ex.Message + ")"; }
     }
 
-    private void Exit_Click(object sender, RoutedEventArgs e) => Close();
+    private void Exit_Click(object? sender, RoutedEventArgs e) => Close();
 
     // ---- ui state ----
     private void UpdateUi()
     {
-        Overlay.Visibility = _emulator.IsRomLoaded ? Visibility.Collapsed : Visibility.Visible;
+        Overlay.IsVisible = !_emulator.IsRomLoaded;
 
         StatusState.Text = _emulator.IsRomLoaded ? "Running" : "Stopped";
         string machine = _emulator.IsRomLoaded
@@ -1855,7 +1763,7 @@ public partial class MainWindow : Window
         ModelClassicItem.IsChecked = classic;
         ModelIifxItem.IsChecked = fx;
         ModelQuadraItem.IsChecked = q;
-        IifxVideoRomItem.Visibility = fx ? Visibility.Visible : Visibility.Collapsed;
+        IifxVideoRomItem.IsVisible = fx;
         IifxVideoRomItem.IsEnabled = fx;
         IifxVideoRomItem.Header = fx && !string.IsNullOrEmpty(_settings.VideoRomIifx)
             ? $"8•24 GC Card ROM…  ({Path.GetFileName(_settings.VideoRomIifx)})"
@@ -1864,9 +1772,8 @@ public partial class MainWindow : Window
         Mem2Item.IsChecked = classic && _settings.RamMB == 2;
         Mem4Item.IsChecked = classic && _settings.RamMB == 4;
         Mem1Item.IsEnabled = Mem2Item.IsEnabled = Mem4Item.IsEnabled = classic;
-        Mem1Item.Visibility = Mem2Item.Visibility = Mem4Item.Visibility =
-            classic ? Visibility.Visible : Visibility.Collapsed;
-        MemFx4Item.Visibility = fx ? Visibility.Visible : Visibility.Collapsed;
+        Mem1Item.IsVisible = Mem2Item.IsVisible = Mem4Item.IsVisible = classic;
+        MemFx4Item.IsVisible = fx;
         MemFx4Item.IsEnabled = fx;
         MemFx4Item.IsChecked = fx && _settings.RamMBIifx == 4;
         // Each of the IIfx's two four-SIMM banks is empty or holds four equal
@@ -1875,18 +1782,18 @@ public partial class MainWindow : Window
         var fxOnlyMems = new[] { MemFx20Item, MemFx68Item, MemFx80Item };
         foreach (var item in fxOnlyMems)
         {
-            item.Visibility = fx ? Visibility.Visible : Visibility.Collapsed;
+            item.IsVisible = fx;
             item.IsEnabled = fx;
-            item.IsChecked = fx && _settings.RamMBIifx == int.Parse((string)item.Tag);
+            item.IsChecked = fx && _settings.RamMBIifx == int.Parse((string)item.Tag!);
         }
         var largeMems = new[] { MemQ8Item, MemQ16Item, MemQ32Item, MemQ64Item, MemQ128Item };
         foreach (var item in largeMems)
         {
-            item.Visibility = q || fx ? Visibility.Visible : Visibility.Collapsed;
+            item.IsVisible = q || fx;
             item.IsEnabled = q || fx;
-            item.IsChecked = (q || fx) && _settings.ModelRamMB == int.Parse((string)item.Tag);
+            item.IsChecked = (q || fx) && _settings.ModelRamMB == int.Parse((string)item.Tag!);
         }
-        MemQ136Item.Visibility = q ? Visibility.Visible : Visibility.Collapsed;
+        MemQ136Item.IsVisible = q;
         MemQ136Item.IsEnabled = q;
         MemQ136Item.IsChecked = q && _settings.RamMBQuadra == 136;
         MonitorMenu.IsEnabled = q;

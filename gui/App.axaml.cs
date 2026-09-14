@@ -1,29 +1,34 @@
-using System.Windows;
-using System.Windows.Threading;
+using Avalonia;
+using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Markup.Xaml;
+using Avalonia.Threading;
+using OpenMac.Gui.Dialogs;
 
 namespace OpenMac.Gui;
 
 public partial class App : Application
 {
-    protected override void OnStartup(StartupEventArgs e)
+    public override void Initialize() => AvaloniaXamlLoader.Load(this);
+
+    public override void OnFrameworkInitializationCompleted()
     {
         Log.Init();
         Log.Line("app startup");
 
-        DispatcherUnhandledException += OnDispatcherUnhandled;
+        Dispatcher.UIThread.UnhandledException += OnDispatcherUnhandled;
         AppDomain.CurrentDomain.UnhandledException += (_, ev) =>
             Log.Line("FATAL (AppDomain): " + ev.ExceptionObject);
 
-        base.OnStartup(e);
+        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+        {
+            desktop.MainWindow = new MainWindow();
+            desktop.Exit += (_, _) => Log.Line("app exit");
+        }
+
+        base.OnFrameworkInitializationCompleted();
     }
 
-    protected override void OnExit(ExitEventArgs e)
-    {
-        Log.Line("app exit");
-        base.OnExit(e);
-    }
-
-    private void OnDispatcherUnhandled(object sender, DispatcherUnhandledExceptionEventArgs e)
+    private void OnDispatcherUnhandled(object? sender, DispatcherUnhandledExceptionEventArgs e)
     {
         Log.Line("UNHANDLED: " + e.Exception);
         MessageBox.Show(

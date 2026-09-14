@@ -1,34 +1,28 @@
-<Window x:Class="OpenMac.Gui.Dialogs.CreateHardDiskDialog"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+<Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="OpenMac.Gui.Dialogs.CreateHardDiskDialog"
         Title="Create Hard Disk" Width="460" SizeToContent="Height"
-        WindowStartupLocation="CenterOwner" ResizeMode="NoResize" ShowInTaskbar="False"
-        Background="{StaticResource WindowBg}" Foreground="{StaticResource TextPrimary}"
-        FontFamily="Segoe UI" FontSize="13">
+        WindowStartupLocation="CenterOwner" CanResize="False" ShowInTaskbar="False">
     <StackPanel Margin="20">
         <TextBlock Text="New hard-disk image" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,4" />
-        <TextBlock x:Name="FormatNote" Foreground="{StaticResource TextSecondary}"
+        <TextBlock x:Name="FormatNote" Classes="secondary"
                    TextWrapping="Wrap" Margin="0,0,0,16" />
 
         <TextBlock Text="Volume name" Margin="0,0,0,5" />
         <TextBox x:Name="NameBox" Text="OpenMac HD" MaxLength="27" Margin="0,0,0,14" />
 
         <TextBlock Text="Size" Margin="0,0,0,5" />
-        <ComboBox x:Name="SizeBox" Margin="0,0,0,14" />
+        <ComboBox x:Name="SizeBox" HorizontalAlignment="Stretch" Margin="0,0,0,14" />
 
         <TextBlock Text="Save image to" Margin="0,0,0,5" />
-        <Grid Margin="0,0,0,20">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
+        <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,20">
             <TextBox x:Name="PathBox" Grid.Column="0" IsReadOnly="True" />
             <Button Grid.Column="1" Content="Browse…" Margin="8,0,0,0" Click="Browse_Click" />
         </Grid>
 
-        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button Content="Cancel" IsCancel="True" MinWidth="90" Margin="0,0,10,0" />
-            <Button x:Name="CreateBtn" Content="Create" Style="{StaticResource AccentButton}"
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
+            <Button Content="Cancel" IsCancel="True" MinWidth="90" Click="Cancel_Click" />
+            <Button x:Name="CreateBtn" Content="Create" Classes="accent"
                     MinWidth="90" Click="Create_Click" />
         </StackPanel>
     </StackPanel>

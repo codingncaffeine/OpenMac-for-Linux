@@ -1,5 +1,6 @@
 using System.IO;
-using System.Windows;
+using Avalonia.Controls;
+using Avalonia.Interactivity;
 using OpenMac.Gui.Emulation;
 
 namespace OpenMac.Gui.Dialogs;
@@ -11,11 +12,13 @@ public partial class CreateHardDiskDialog : Window
 
     private readonly Settings _settings;
 
+    // For the XAML loader and previewer only; the app passes its own settings.
+    public CreateHardDiskDialog() : this(new Settings()) { }
+
     public CreateHardDiskDialog(Settings settings)
     {
         _settings = settings;
         InitializeComponent();
-        WindowTheming.ApplyDarkTitleBar(this);
 
         foreach (int mb in HardDiskImage.CommonSizesMB)
             SizeBox.Items.Add($"{mb} MB");
@@ -31,21 +34,26 @@ public partial class CreateHardDiskDialog : Window
               + "the built-in HFS formatter is enabled, then you can re-create it ready to use.";
     }
 
+    /// <summary>Show over <paramref name="owner"/> and return once it closes.</summary>
+    public bool? ShowModal(Window owner) => ModalLoop.Wait(ShowDialog<bool?>(owner));
+
     private int SelectedSizeMB => HardDiskImage.CommonSizesMB[SizeBox.SelectedIndex];
 
-    private void Browse_Click(object sender, RoutedEventArgs e)
+    private void Browse_Click(object? sender, RoutedEventArgs e)
     {
         if (FilePicker.Save(this, _settings, FilePicker.HardDisk, "Save hard-disk image",
                             "Disk image (*.img)|*.img|All files (*.*)|*.*",
-                            SafeFileName(NameBox.Text) + ".img", ".img",
+                            SafeFileName(NameBox.Text ?? "") + ".img", ".img",
                             _settings.ModelLastHardDisk) is { } path)
             PathBox.Text = path;
         Log.Line($"create hard disk: save-as -> \"{PathBox.Text}\"");
     }
 
-    private void Create_Click(object sender, RoutedEventArgs e)
+    private void Cancel_Click(object? sender, RoutedEventArgs e) => Close(false);
+
+    private void Create_Click(object? sender, RoutedEventArgs e)
     {
-        string name = NameBox.Text.Trim();
+        string name = (NameBox.Text ?? "").Trim();
         if (name.Length == 0) { Warn("Please enter a volume name."); return; }
 
         // The path box is read-only, so the only way to fill it is Browse. If the
@@ -66,9 +74,9 @@ public partial class CreateHardDiskDialog : Window
         try
         {
             CreateBtn.IsEnabled = false;
-            HardDiskImage.CreateBlank(PathBox.Text, SelectedSizeMB, name);
+            HardDiskImage.CreateBlank(PathBox.Text!, SelectedSizeMB, name);
             CreatedPath = PathBox.Text;
-            DialogResult = true;
+            Close(true);
         }
         catch (Exception ex)
         {

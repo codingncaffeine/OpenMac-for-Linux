@@ -2,29 +2,39 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net11.0-windows</TargetFramework>
-    <UseWPF>true</UseWPF>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <AssemblyName>OpenMac</AssemblyName>
     <RootNamespace>OpenMac.Gui</RootNamespace>
-    <ApplicationIcon>..\shell\assets\openmac.ico</ApplicationIcon>
     <Product>OpenMac</Product>
     <AssemblyTitle>OpenMac</AssemblyTitle>
-    <UseWindowsForms>false</UseWindowsForms>
-    <Version>0.6.0</Version>
+    <Version>0.1.0</Version>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
-  <!-- Ship the native core DLL (built by CMake into gui/native) beside the app.
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.2" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.2" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.2" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AvaloniaResource Include="Assets\**" />
+  </ItemGroup>
+
+  <!-- Ship the native core (built by CMake into gui/native) beside the app.
        CopyToOutputDirectory covers a local build; publish is a separate copy
        step, and without CopyToPublishDirectory a published tree is an app with
        no emulator in it. -->
   <ItemGroup>
-    <None Include="native\openmac_c.dll" Condition="Exists('native\openmac_c.dll')">
+    <None Include="native/libopenmac_c.so" Condition="Exists('native/libopenmac_c.so')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
-      <Link>openmac_c.dll</Link>
+      <Link>libopenmac_c.so</Link>
     </None>
   </ItemGroup>
 

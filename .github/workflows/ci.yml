@@ -28,6 +28,22 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+  linux-gui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Configure core
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOPENMAC_BUILD_SHELL=OFF -DOPENMAC_BUILD_TESTS=OFF
+      - name: Build core library
+        run: cmake --build build --parallel --target openmac_c
+      - name: Build GUI
+        run: dotnet build gui -c Release
+      - name: The core library ships beside the app
+        run: test -f gui/bin/Release/net10.0/libopenmac_c.so
+
   cpu-sst:
     runs-on: ubuntu-latest
     steps:
