@@ -10,6 +10,7 @@ using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using OpenMac.Gui.Dialogs;
 using OpenMac.Gui.Emulation;
+using OpenMac.Gui.Platform;
 
 namespace OpenMac.Gui;
 
@@ -53,6 +54,8 @@ public partial class MainWindow : Window
     private ulong _capturedMotionPackets;
     private long _capturedMouseDx, _capturedMouseDy;
     private static readonly Cursor HiddenCursor = new(StandardCursorType.None);
+    // The real pointer lock where the backend allows one (X11 and Xwayland).
+    private X11PointerCapture? _grab;
     // ADB codes currently held down. A key is pressed on the Mac once however
     // long the host repeats it, and everything still held is lifted when the
     // window loses focus -- the host never sends those releases to us.
@@ -78,7 +81,16 @@ public partial class MainWindow : Window
         BuildMonitorMenu();
         UpdateUi();
 
-        Opened += (_, _) => RequestAnimationFrame(OnAnimationFrame);
+        Opened += (_, _) =>
+        {
+            IPlatformHandle? handle = TryGetPlatformHandle();
+            Log.Line($"window: platform handle {handle?.HandleDescriptor ?? "(none)"} 0x{handle?.Handle ?? 0:X}, "
+                     + $"scaling {RenderScaling:0.##}");
+            _grab = X11PointerCapture.TryCreate(handle, Log.Line);
+            if (_grab is null)
+                Log.Line("input: no pointer lock on this backend; captured motion is measured over the screen only");
+            RequestAnimationFrame(OnAnimationFrame);
+        };
         Loaded += (_, _) =>
         {
             ApplyScale();
@@ -95,6 +107,8 @@ public partial class MainWindow : Window
         {
             _closed = true;
             UnlockMouse();
+            _grab?.Dispose();
+            _grab = null;
             ReleaseKeys();
             _emulator.Dispose();   // stop the emulation thread and persist the hard disk
             _settings.Save();
@@ -306,12 +320,14 @@ public partial class MainWindow : Window
             ReleaseKeys();
         };
 
-        // Captured mouse. On the first click the host pointer is hidden over the
-        // screen and the Mac is fed relative motion, measured in its own pixels.
-        // Middle-click (or losing focus) releases it.
+        // Captured mouse. A left click on the screen captures it: the host
+        // pointer is hidden and locked to the window, and the Mac is fed the
+        // mouse's relative motion. Middle-click (or losing focus) releases it.
+        // Without a pointer lock (a backend other than X11) motion is measured
+        // in guest pixels while the pointer is over the screen.
         ScreenImage.PointerMoved += (_, e) =>
         {
-            if (!_mouseLocked || !_emulator.IsRomLoaded) return;
+            if (_grab is not null || !_mouseLocked || !_emulator.IsRomLoaded) return;
             Point p = e.GetPosition(ScreenImage);
             if (_lastPointer is { } last)
                 QueueMouseMotion(p.X - last.X, p.Y - last.Y, "pointer");
@@ -319,31 +335,37 @@ public partial class MainWindow : Window
         };
         ScreenImage.PointerPressed += (_, e) =>
         {
-            PointerPointProperties props = e.GetCurrentPoint(ScreenImage).Properties;
-            if (props.IsMiddleButtonPressed)
-            {
-                UnlockMouse();
-                e.Handled = true;
-                return;
-            }
-            if (!props.IsLeftButtonPressed) return;
+            if (_mouseLocked || !e.GetCurrentPoint(ScreenImage).Properties.IsLeftButtonPressed) return;
             ScreenImage.Focus();
-            if (!_mouseLocked) { LockMouse(e.GetPosition(ScreenImage)); e.Handled = true; return; }
-            if (_guestMouseDown) return;
+            LockMouse(e.GetPosition(ScreenImage));
+            e.Handled = true;
+        };
+        // While captured, buttons are taken at the window before anything under
+        // the hidden pointer sees them: it sits wherever the lock left it, which
+        // may be over the menu bar or the status line rather than the screen.
+        AddHandler(PointerPressedEvent, (_, e) =>
+        {
+            if (!_mouseLocked) return;
+            PointerPointProperties props = e.GetCurrentPoint(this).Properties;
+            e.Handled = true;
+            if (props.IsMiddleButtonPressed) { UnlockMouse(); return; }
+            if (!props.IsLeftButtonPressed || _guestMouseDown) return;
             FlushMouseMotion();
             _guestMouseDown = true;
             _emulator.MouseButton(true);
-        };
-        ScreenImage.PointerReleased += (_, e) =>
+        }, RoutingStrategies.Tunnel);
+        AddHandler(PointerReleasedEvent, (_, e) =>
         {
+            if (!_mouseLocked) return;
+            e.Handled = true;
             if (e.InitialPressMouseButton != MouseButton.Left) return;
             // A release belonging to the capture gesture has no matching guest
             // press. A real guest click is forwarded exactly once.
-            if (!_guestMouseDown) { e.Handled = true; return; }
+            if (!_guestMouseDown) return;
             FlushMouseMotion();
             _guestMouseDown = false;
             _emulator.MouseButton(false);
-        };
+        }, RoutingStrategies.Tunnel);
 
         // Keys are taken before the focused control sees them, so Tab and the
         // arrows reach the Mac instead of moving focus around the window.
@@ -428,6 +450,11 @@ public partial class MainWindow : Window
 
     private void FlushMouseMotion()
     {
+        if (_grab is not null && _mouseLocked)
+        {
+            _grab.TakeMotion(out double rawDx, out double rawDy);
+            if (rawDx != 0 || rawDy != 0) QueueMouseMotion(rawDx, rawDy, "xi2-raw");
+        }
         if (!_mouseLocked || !_emulator.IsRomLoaded)
         {
             _pendingMouseDx = _pendingMouseDy = 0;
@@ -454,8 +481,11 @@ public partial class MainWindow : Window
         _capturedMotionPackets = 0;
         _capturedMouseDx = _capturedMouseDy = 0;
         ScreenImage.Cursor = HiddenCursor;
+        Cursor = HiddenCursor;   // hidden over the whole window: the lock may park it anywhere in it
+        _grab?.Lock();
         Title = _baseTitle + "   —   input captured: keys go to the Mac (middle-click to release)";
-        Log.Line($"input: pointer captured backend={_emulator.BackendName}");
+        Log.Line($"input: pointer captured backend={_emulator.BackendName} "
+                 + $"lock={(_grab is null ? "none" : "x11")}");
     }
 
     private void UnlockMouse()
@@ -469,10 +499,13 @@ public partial class MainWindow : Window
         _guestMouseDown = false;
         _mouseLocked = false;
         _lastPointer = null;
+        _grab?.Unlock();
         ScreenImage.Cursor = null;
+        Cursor = null;
         Title = _baseTitle;
         Log.Line($"input: pointer released packets={_capturedMotionPackets} "
-                 + $"delta={_capturedMouseDx}/{_capturedMouseDy} source=pointer");
+                 + $"delta={_capturedMouseDx}/{_capturedMouseDy} "
+                 + (_grab is null ? "source=pointer" : "source=xi2-raw " + _grab.Stats()));
     }
 
     // ---- machine lifecycle ----
