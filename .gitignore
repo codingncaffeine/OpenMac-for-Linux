@@ -1,0 +1,45 @@
+# Build output
+build/
+build-*/
+out/
+cmake-build-*/
+.vs/
+.vscode/
+*.user
+
+# Packaged release trees and their archives
+dist/
+*.zip
+
+# Dev-shell local state
+imgui.ini
+CMakeUserPresets.json
+
+# Local planning docs — never pushed
+_plans/
+
+# Apple ROMs and disk images — user-supplied, never committed
+/gitignore/
+*.rom
+roms/
+*.img
+*.image
+*.dsk
+*.hfs
+*.dc42
+*.iso
+*.toast
+*.cue
+*.bin
+*.sit
+*.sea
+*.hqx
+*.cpt
+*.lha
+*.lzh
+
+# Locally fetched test data (SingleStepTests etc.); the synthetic IIfx
+# public boot-matrix baseline is tracked (regenerate with
+# openmac_iifx_matrix --emit whenever the checkpoint format changes)
+tests/data/*
+!tests/data/iifx-public-matrix.jsonl

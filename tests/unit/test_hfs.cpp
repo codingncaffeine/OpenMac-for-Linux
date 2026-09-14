@@ -1,0 +1,282 @@
+#include <doctest/doctest.h>
+#include <openmac/hfs.hpp>
+
+#include <cstdio>
+#include <string>
+#include <vector>
+
+using namespace openmac;
+
+namespace {
+
+// Big-endian readers into the raw image.
+u16 rd16(const std::vector<u8>& b, std::size_t off) {
+    return static_cast<u16>((b[off] << 8) | b[off + 1]);
+}
+u32 rd32(const std::vector<u8>& b, std::size_t off) {
+    return (static_cast<u32>(b[off]) << 24) | (static_cast<u32>(b[off + 1]) << 16) |
+           (static_cast<u32>(b[off + 2]) << 8) | static_cast<u32>(b[off + 3]);
+}
+
+constexpr std::size_t kMdbOff = 0x400;  // MDB = logical block 2
+
+// A short hexdump of the MDB, shown via doctest INFO() when a check fails.
+std::string mdbHexdump(const std::vector<u8>& img) {
+    std::string out = "MDB @0x400:\n";
+    char line[80];
+    for (std::size_t row = 0; row < 64u; row += 16u) {
+        std::snprintf(line, sizeof(line), "%03zx:", row);
+        out += line;
+        for (std::size_t i = 0; i < 16u; ++i) {
+            std::snprintf(line, sizeof(line), " %02x",
+                          static_cast<unsigned>(img[kMdbOff + row + i]));
+            out += line;
+        }
+        out += "\n";
+    }
+    return out;
+}
+
+// Read the drVN Pascal string (28 bytes at MDB+0x24) back into a std::string.
+std::string readVolumeName(const std::vector<u8>& img) {
+    const std::size_t vn = kMdbOff + 0x24;
+    const u8 len = img[vn];
+    return std::string(reinterpret_cast<const char*>(&img[vn + 1]), len);
+}
+
+} // namespace
+
+TEST_CASE("formatVolume produces a mountable, empty 20 MB HFS volume") {
+    const u32 sizeBytes = 20u * 1024 * 1024;
+    const std::string volName = "OpenMac HD";
+    std::vector<u8> img = hfs::formatVolume(sizeBytes, volName);
+
+    INFO(mdbHexdump(img));
+
+    // Exact requested length, multiple of 512.
+    REQUIRE(img.size() == sizeBytes);
+
+    // Boot blocks (logical blocks 0-1) are zeroed: non-bootable data volume.
+    for (std::size_t i = 0; i < 1024u; ++i)
+        CHECK(img[i] == 0);
+
+    // --- Master Directory Block ------------------------------------------
+    CHECK(rd16(img, kMdbOff + 0x00) == 0x4244);        // drSigWord 'BD'
+    CHECK((rd16(img, kMdbOff + 0x0A) & 0x0100) != 0);  // drAtrb: unmounted cleanly
+    CHECK(rd16(img, kMdbOff + 0x0E) == 3);             // drVBMSt
+    CHECK(rd32(img, kMdbOff + 0x1E) == 16);            // drNxtCNID
+    CHECK(rd16(img, kMdbOff + 0x0C) == 0);             // drNmFls (empty root)
+
+    // Volume name round-trips.
+    CHECK(readVolumeName(img) == volName);
+
+    const u32 nmAlBlks = rd16(img, kMdbOff + 0x12);    // drNmAlBlks
+    const u32 alBlkSiz = rd32(img, kMdbOff + 0x14);    // drAlBlkSiz
+    const u32 alBlSt   = rd16(img, kMdbOff + 0x1C);    // drAlBlSt
+    const u32 freeBks  = rd16(img, kMdbOff + 0x22);    // drFreeBks
+
+    // Allocation-block count stays below the 16-bit ceiling and the volume
+    // (allocation area + overhead) fits within the requested size.
+    CHECK(nmAlBlks < 65536u);
+    CHECK(alBlkSiz % 512u == 0);
+    const std::size_t allocBytes = static_cast<std::size_t>(alBlSt) * 512u +
+                                   static_cast<std::size_t>(nmAlBlks) * alBlkSiz;
+    CHECK(allocBytes + 2u * 512u <= sizeBytes);  // + alt-MDB and reserved trailer
+
+    // Free blocks == total minus the two B*-tree files' allocation.
+    const u32 xtFlSize = rd32(img, kMdbOff + 0x82);    // drXTFlSize
+    const u32 ctFlSize = rd32(img, kMdbOff + 0x92);    // drCTFlSize
+    const u32 btAllocBlks = xtFlSize / alBlkSiz + ctFlSize / alBlkSiz;
+    CHECK(freeBks == nmAlBlks - btAllocBlks);
+
+    // The exact geometry chosen for a 20 MB volume (documented in the report).
+    CHECK(alBlkSiz == 512u);
+    CHECK(nmAlBlks == 40945u);
+    CHECK(freeBks == 40307u);
+
+    // Each B*-tree file spans one full clump (drXTClpSiz / drCTClpSiz) — the
+    // sizing a real hfsutils format uses and that _MountVol accepts. For 20 MB:
+    // (40945 / 128) * 512 = 319 allocation blocks = 163328 bytes each.
+    const u32 xtClpSiz = rd32(img, kMdbOff + 0x4A);    // drXTClpSiz
+    const u32 ctClpSiz = rd32(img, kMdbOff + 0x4E);    // drCTClpSiz
+    CHECK(xtFlSize == xtClpSiz);
+    CHECK(ctFlSize == ctClpSiz);
+    CHECK(xtFlSize == 163328u);
+    CHECK(ctFlSize == 163328u);
+    CHECK(btAllocBlks == 638u);
+
+    // Backup MDB (logical block vlen-2) is an exact copy of the primary MDB.
+    const std::size_t vlen = sizeBytes / 512u;
+    const std::size_t altOff = (vlen - 2) * 512u;
+    bool altMatches = true;
+    for (std::size_t i = 0; i < 512u; ++i)
+        altMatches = altMatches && (img[altOff + i] == img[kMdbOff + i]);
+    CHECK(altMatches);
+
+    // --- locate the B*-tree files via the MDB extent records --------------
+    const u32 lpa = alBlkSiz / 512u;
+    const u32 xtFirstAB = rd16(img, kMdbOff + 0x86);   // drXTExtRec[0].xdrStABN
+    const u32 ctFirstAB = rd16(img, kMdbOff + 0x96);   // drCTExtRec[0].xdrStABN
+    const std::size_t xtHdr = static_cast<std::size_t>(alBlSt + xtFirstAB * lpa) * 512u;
+    const std::size_t ctHdr = static_cast<std::size_t>(alBlSt + ctFirstAB * lpa) * 512u;
+    const std::size_t ctLeaf = ctHdr + 512u;  // node 1
+
+    // Both header nodes: ndType == header (0x01) and bthNodeSize == 512.
+    CHECK(img[xtHdr + 8] == 0x01);
+    CHECK(rd16(img, xtHdr + 0x0e + 18) == 512);        // extents bthNodeSize
+    CHECK(img[ctHdr + 8] == 0x01);
+    CHECK(rd16(img, ctHdr + 0x0e + 18) == 512);        // catalog bthNodeSize
+
+    // Catalog header advertises a one-level tree rooted at node 1.
+    CHECK(rd16(img, ctHdr + 0x0e + 0) == 1);           // bthDepth
+    CHECK(rd32(img, ctHdr + 0x0e + 2) == 1);           // bthRoot
+    CHECK(rd32(img, ctHdr + 0x0e + 6) == 2);           // bthNRecs (dir + thread)
+
+    // Each tree file is a full clump of 512-byte nodes; only the header (and,
+    // for the catalog, the root leaf) is in use, the rest are free. The
+    // node-allocation bitmap (header record 2 @ 0x0f8) marks exactly those.
+    CHECK(rd32(img, xtHdr + 0x0e + 22) == 319u);       // extents bthNNodes
+    CHECK(rd32(img, xtHdr + 0x0e + 26) == 318u);       // extents bthFree (node 0 used)
+    CHECK(img[xtHdr + 0x0f8] == 0x80);                 // node map: only node 0
+    CHECK(rd32(img, ctHdr + 0x0e + 22) == 319u);       // catalog bthNNodes
+    CHECK(rd32(img, ctHdr + 0x0e + 26) == 317u);       // catalog bthFree (nodes 0,1 used)
+    CHECK(img[ctHdr + 0x0f8] == 0xC0);                 // node map: nodes 0 and 1
+
+    // --- catalog leaf node (the root directory) ---------------------------
+    CHECK(img[ctLeaf + 8] == 0xFF);                    // ndType == leaf
+    CHECK(rd16(img, ctLeaf + 10) == 2);                // ndNRecs == 2
+
+    // First record's key: offset table's last entry (roff[0]) points to it.
+    const u32 roff0 = rd16(img, ctLeaf + 512 - 2);
+    CHECK(roff0 == 0x00e);
+    // Catalog key layout: keyLen(1), reserved(1), parID(4) -> parID at +2.
+    CHECK(rd32(img, ctLeaf + roff0 + 2) == 1);         // root dir key parID == ROOTPAR
+
+    // Second record is the root-directory thread (parID == ROOTDIR).
+    const u32 roff1 = rd16(img, ctLeaf + 512 - 4);
+    CHECK(rd32(img, ctLeaf + roff1 + 2) == 2);
+
+    // Volume bitmap (logical block 3): the used allocation blocks are marked.
+    const std::size_t vbm = 3u * 512u;
+    for (u32 ab = 0; ab < btAllocBlks; ++ab)
+        CHECK((img[vbm + (ab >> 3)] & (0x80u >> (ab & 7u))) != 0);
+    // The first block past the B*-trees is free.
+    CHECK((img[vbm + (btAllocBlks >> 3)] & (0x80u >> (btAllocBlks & 7u))) == 0);
+}
+
+TEST_CASE("formatVolume name handling: clamp to 27 chars and default empty") {
+    // A 4 MB volume with an over-long name is clamped to 27 characters.
+    std::vector<u8> a = hfs::formatVolume(4u * 1024 * 1024,
+                                          "This Name Is Definitely Way Too Long");
+    CHECK(readVolumeName(a) == "This Name Is Definitely Way");  // 27 chars
+    CHECK(rd16(a, kMdbOff + 0x00) == 0x4244);
+
+    // An empty name defaults to "Untitled".
+    std::vector<u8> b = hfs::formatVolume(4u * 1024 * 1024, "");
+    CHECK(readVolumeName(b) == "Untitled");
+}
+
+// The Quadra's ROM rebuilds a volume that was not unmounted cleanly, and it
+// bounds its walk of the extents-overflow B*-tree by ceil(fileBytes / 12),
+// computed with a SIXTEEN-BIT divide ($4080F456). A quotient that does not fit
+// leaves the divide's destination untouched, the ceil answers 1, and the ROM
+// refuses any volume whose extents tree holds a single record -- which is
+// "the disk went corrupt and won't boot". The catalog's divisor is 70 and has
+// far more room, but it is the same arithmetic, so both are checked.
+TEST_CASE("formatVolume keeps the B*-trees inside the ROM's repair budget") {
+    for (u32 mb : {4u, 20u, 64u, 100u, 250u, 500u, 1000u, 2000u}) {
+        const u32 sizeBytes = mb * 1024u * 1024u;
+        std::vector<u8> img = hfs::formatVolume(sizeBytes, "Budget");
+        REQUIRE(img.size() == sizeBytes);
+        INFO("volume size = " << mb << " MB");
+        const u32 alBlkSiz = rd32(img, kMdbOff + 0x14);
+        const u32 xtFlSize = rd32(img, kMdbOff + 0x82);
+        const u32 ctFlSize = rd32(img, kMdbOff + 0x92);
+        const u32 xtClpSiz = rd32(img, kMdbOff + 0x4A);
+        INFO("alBlkSiz=" << alBlkSiz << " xtFlSize=" << xtFlSize
+                         << " ctFlSize=" << ctFlSize);
+        CHECK(xtFlSize > 0);
+        CHECK(ctFlSize > 0);
+        // The budget divides are DIVU.W: the quotient has to fit in 16 bits.
+        CHECK(xtFlSize / 12u < 65536u);
+        CHECK(ctFlSize / 70u < 65536u);
+        // A growth step must not put the tree straight back out of reach.
+        CHECK(xtClpSiz <= xtFlSize);
+        // Still whole allocation blocks, which is what makes the file mountable.
+        CHECK(xtFlSize % alBlkSiz == 0);
+        CHECK(ctFlSize % alBlkSiz == 0);
+    }
+}
+
+TEST_CASE("shrinkExtentsTree cuts an over-large extents tree, and only free nodes") {
+    // Build a volume the way the formatter used to: the extents file capped at
+    // the header node's map capacity, 2048 nodes, which on 8 KB allocation
+    // blocks is 1 MB and past what the ROM can walk.
+    const u32 sizeBytes = 500u * 1024u * 1024u;
+    std::vector<u8> img = hfs::formatVolume(sizeBytes, "Legacy");
+    const u32 alBlkSiz = rd32(img, kMdbOff + 0x14);
+    const u32 lpa = alBlkSiz / 512u;
+    const u32 oldBlks = (2048u / lpa);
+    const u32 oldBytes = oldBlks * alBlkSiz;
+    REQUIRE(oldBytes > hfs::kRepairableExtentsBytes);
+
+    // Widen the extents file back out by hand: size, extent, node count, free
+    // count, and the bitmap bits it would own.
+    const u32 xtStart = rd16(img, kMdbOff + 0x86);
+    const u32 alBlSt = rd16(img, kMdbOff + 0x1C);
+    const u32 newBlksWas = rd16(img, kMdbOff + 0x88);
+    const u32 freeWas = rd16(img, kMdbOff + 0x22);
+    auto put32 = [&](std::size_t off, u32 v) {
+        img[off] = u8(v >> 24); img[off + 1] = u8(v >> 16);
+        img[off + 2] = u8(v >> 8); img[off + 3] = u8(v);
+    };
+    auto put16 = [&](std::size_t off, u16 v) {
+        img[off] = u8(v >> 8); img[off + 1] = u8(v);
+    };
+    put32(kMdbOff + 0x82, oldBytes);
+    put16(kMdbOff + 0x88, u16(oldBlks));
+    put16(kMdbOff + 0x22, u16(freeWas - (oldBlks - newBlksWas)));
+    const std::size_t hdr = std::size_t(alBlSt) * 512u + std::size_t(xtStart) * alBlkSiz;
+    const u32 freeWasNodes = rd32(img, hdr + 40);
+    put32(hdr + 36, 2048u);
+    put32(hdr + 40, freeWasNodes + (2048u - newBlksWas * lpa));
+    for (u32 ab = xtStart + newBlksWas; ab < xtStart + oldBlks; ++ab)
+        img[3u * 512u + (ab >> 3)] |= u8(0x80u >> (ab & 7u));
+
+    // Now repair it.
+    std::string why;
+    std::vector<u8> before = img;
+    CHECK(hfs::shrinkExtentsTree(img, 0, sizeBytes, hfs::kRepairableExtentsBytes, why));
+    INFO(why);
+    const u32 xtNow = rd32(img, kMdbOff + 0x82);
+    CHECK(xtNow <= hfs::kRepairableExtentsBytes);
+    CHECK(xtNow / 12u < 65536u);
+    CHECK(xtNow == u32(rd16(img, kMdbOff + 0x88)) * alBlkSiz);
+    CHECK(rd32(img, hdr + 36) == xtNow / 512u);          // bthNNodes
+    CHECK(rd32(img, hdr + 36) > rd32(img, hdr + 40));    // some node still in use
+    CHECK(rd16(img, kMdbOff + 0x22) == freeWas);         // the blocks came back
+    // The freed allocation blocks are free in the bitmap again.
+    const u32 nowBlks = rd16(img, kMdbOff + 0x88);
+    for (u32 ab = xtStart + nowBlks; ab < xtStart + oldBlks; ++ab)
+        CHECK((img[3u * 512u + (ab >> 3)] & (0x80u >> (ab & 7u))) == 0);
+    // The alternate MDB moved with the primary.
+    CHECK(rd32(img, sizeBytes - 1024 + 0x82) == xtNow);
+
+    // Idempotent: a second pass has nothing to do and says nothing.
+    std::string again;
+    CHECK_FALSE(hfs::shrinkExtentsTree(img, 0, sizeBytes,
+                                       hfs::kRepairableExtentsBytes, again));
+    CHECK(again.empty());
+
+    // And it refuses when a node above the cut is in use, leaving the image
+    // byte-identical -- the whole reason it looks at the map at all.
+    std::vector<u8> live = before;
+    const u32 liveNode = 2000;
+    live[hdr + 248 + (liveNode >> 3)] |= u8(0x80u >> (liveNode & 7u));
+    std::vector<u8> untouched = live;
+    std::string refusal;
+    CHECK_FALSE(hfs::shrinkExtentsTree(live, 0, sizeBytes,
+                                       hfs::kRepairableExtentsBytes, refusal));
+    CHECK(refusal.find("left alone") != std::string::npos);
+    CHECK(live == untouched);
+}

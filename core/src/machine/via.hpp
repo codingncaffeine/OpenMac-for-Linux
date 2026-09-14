@@ -1,0 +1,101 @@
+#pragma once
+
+// Synertek/Rockwell 6522 VIA as wired in the compact Macs. Clocked at
+// 783.36 kHz (CPU clock / 10). CA1 = vertical blanking, CA2 = RTC one-second
+// tick, shift register = ADB (P3). IRQ output feeds CPU interrupt level 1.
+
+#include "openmac/types.hpp"
+
+#include <functional>
+
+namespace openmac {
+
+class IifxStateCodec;
+
+class Via6522 {
+public:
+    void reset();
+
+    u8   read(int reg);
+    void write(int reg, u8 value);
+
+    // Advance by VIA clocks (host divides CPU cycles by 10).
+    void tick(int viaClocks);
+
+    // Input edges from the machine.
+    void setCA1(bool level);
+    void setCA2(bool level);
+
+    bool irqAsserted() const { return (ifr_ & ier_ & 0x7F) != 0; }
+
+    // Port callbacks: the machine supplies what input bits read as, and
+    // reacts to output changes (overlay, RTC lines, sound switches...).
+    std::function<u8()> inA;
+    std::function<u8()> inB;
+    std::function<void(u8 value, u8 ddr)> outA;
+    std::function<void(u8 value, u8 ddr)> outB;
+
+    // Externally-clocked shift register (ADB transceiver): srArmed fires
+    // when the CPU arms a transfer (input = shift-in); the machine calls
+    // completeShift when/if the transceiver actually clocks the byte.
+    std::function<void(bool input)> srArmed;
+    std::function<void()> srDisarmed;   // ACR left external-shift mode
+
+    u8 shiftValue() const { return sr_; }
+    void completeShift(bool input, u8 inValue) {
+        if (input) sr_ = inValue;
+        // A completed external shift raises BOTH the shift-register interrupt
+        // and the CB1 interrupt (CB1 carries the external shift clock). The
+        // ROM's ADB manager needs both; with only SR it treats the event as
+        // an error and resets the bus.
+        ifr_ |= 0x04;   // SR  (IFR bit 2)
+        ifr_ |= 0x10;   // CB1 (IFR bit 4)
+    }
+
+    u8 ora() const { return ora_; }
+    u8 orb() const { return orb_; }
+    u8 ddra() const { return ddra_; }
+    u8 ddrb() const { return ddrb_; }
+    // Interrupt/timer register views for the debugger.
+    u8 ifr() const { return ifr_; }
+    u8 ier() const { return ier_; }
+    u8 acr() const { return acr_; }
+    u8 pcr() const { return pcr_; }
+    u16 t1Counter() const { return t1c_; }
+    u16 t2Counter() const { return t2c_; }
+
+    // Effective PB7 pin level. When ACR bit 7 (and DDRB bit 7) enable the T1
+    // output on PB7, the pin follows the timer -- a square wave in free-running
+    // mode, a one-shot pulse otherwise -- rather than the CPU-written ORB latch.
+    // The compact-Mac sound circuit gates its output on this line (low = on),
+    // so timer-driven tones must be read from here, not from orb() alone.
+    bool pb7() const {
+        if ((acr_ & 0x80) && (ddrb_ & 0x80)) return pb7_;
+        return (orb_ & 0x80) != 0;
+    }
+
+private:
+    friend class IifxStateCodec;
+
+    void setIFR(u8 bit);
+    void clearIFR(u8 bit);
+    void portAWritten();
+    void portBWritten();
+
+    u8 orb_ = 0, ora_ = 0;
+    u8 ddrb_ = 0, ddra_ = 0;
+    u16 t1c_ = 0xFFFF, t1l_ = 0xFFFF;
+    u16 t2c_ = 0xFFFF;
+    u8 t2ll_ = 0;
+    bool t1Running_ = false;
+    bool t2Running_ = false;
+    u8 sr_ = 0;
+    u8 acr_ = 0, pcr_ = 0;
+    u8 ifr_ = 0, ier_ = 0;
+    bool ca1_ = false, ca2_ = false;
+    bool pb7_ = false;     // T1 output level on PB7 (ACR bit 7 modes)
+    int srTicks_ = 0;      // countdown to shift-register completion
+    bool srInput_ = false; // completing a shift-in (data arrives from outside)
+};
+
+} // namespace openmac
