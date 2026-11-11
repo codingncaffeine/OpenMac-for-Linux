@@ -6,7 +6,7 @@ The first alpha of OpenMac for Linux: the same emulator core as OpenMac, with a 
 - **Display Card 8•24 GC on the IIfx** — supply the card's ROM and its control panel, and the accelerator draws the desktop, rocket and all
 - **Captured mouse and keyboard** — click the Mac's screen and the pointer stays inside it, with Super, Alt+Tab and the other desktop shortcuts going to the Mac; middle-click gives them back
 - **Sound** — through PulseAudio, PipeWire or ALSA, with nothing extra to install
-- **Floppies, hard disks, CD images, host folders and the drop box** — the same media handling as on Windows
+- **Floppies, hard disks, host folders and the drop box** — the same media handling as on Windows; CD images and networking are in but not yet tested on Linux
 - **Packages** — a `.deb` for Debian and Ubuntu, a tarball for any other glibc distro, and a tarball for Alpine and other musl systems
 
 ## What's Fixed

@@ -9,8 +9,9 @@ the same front end, with the Windows plumbing swapped for Linux equivalents
 (WPF → Avalonia, waveOut → SDL3).
 
 > **Status:** alpha. All three machines boot and run in the Linux front end,
-> with sound, captured mouse and keyboard, floppies, hard disks, CD images and
-> the drop box. Expect rough edges, and please report what you find.
+> with sound, captured mouse and keyboard, floppies, hard disks and the drop
+> box. CD images and networking are in but have not been tested on Linux yet.
+> Expect rough edges, and please report what you find.
 
 - **Macintosh Classic** — 68000 (validated against the SingleStepTests suite at
   100% state accuracy), VIA 6522, ADB, IWM floppy, NCR 5380 SCSI, real-time
