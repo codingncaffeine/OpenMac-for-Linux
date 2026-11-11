@@ -57,4 +57,77 @@ internal static class AdbKeys
         PhysicalKey.Insert or PhysicalKey.Help => 0x72,    // Help
         _ => -1,
     };
+
+    /// <summary>Kernel (evdev) key code -> ADB keycode, for keys taken by the
+    /// X11 keyboard grab: an X keycode is the kernel's code plus 8, a position
+    /// on the keyboard like everything else here.</summary>
+    public static int MapEvdev(int code) =>
+        code >= 0 && code < Evdev.Length ? Map(Evdev[code]) : -1;
+
+    /// <summary>The F11 key's kernel code: the host's fullscreen toggle.</summary>
+    public const int EvdevF11 = 87;
+
+    private static readonly PhysicalKey[] Evdev = BuildEvdev();
+
+    private static PhysicalKey[] BuildEvdev()
+    {
+        var t = new PhysicalKey[140];
+        void Set(int code, PhysicalKey key) => t[code] = key;
+        Set(1, PhysicalKey.Escape);
+        PhysicalKey[] digits =
+        {
+            PhysicalKey.Digit1, PhysicalKey.Digit2, PhysicalKey.Digit3, PhysicalKey.Digit4, PhysicalKey.Digit5,
+            PhysicalKey.Digit6, PhysicalKey.Digit7, PhysicalKey.Digit8, PhysicalKey.Digit9, PhysicalKey.Digit0,
+        };
+        for (int i = 0; i < digits.Length; i++) Set(2 + i, digits[i]);
+        Set(12, PhysicalKey.Minus); Set(13, PhysicalKey.Equal); Set(14, PhysicalKey.Backspace);
+        Set(15, PhysicalKey.Tab);
+        PhysicalKey[] row1 =
+        {
+            PhysicalKey.Q, PhysicalKey.W, PhysicalKey.E, PhysicalKey.R, PhysicalKey.T, PhysicalKey.Y,
+            PhysicalKey.U, PhysicalKey.I, PhysicalKey.O, PhysicalKey.P,
+            PhysicalKey.BracketLeft, PhysicalKey.BracketRight, PhysicalKey.Enter, PhysicalKey.ControlLeft,
+        };
+        for (int i = 0; i < row1.Length; i++) Set(16 + i, row1[i]);
+        PhysicalKey[] row2 =
+        {
+            PhysicalKey.A, PhysicalKey.S, PhysicalKey.D, PhysicalKey.F, PhysicalKey.G, PhysicalKey.H,
+            PhysicalKey.J, PhysicalKey.K, PhysicalKey.L, PhysicalKey.Semicolon, PhysicalKey.Quote,
+            PhysicalKey.Backquote, PhysicalKey.ShiftLeft, PhysicalKey.Backslash,
+        };
+        for (int i = 0; i < row2.Length; i++) Set(30 + i, row2[i]);
+        PhysicalKey[] row3 =
+        {
+            PhysicalKey.Z, PhysicalKey.X, PhysicalKey.C, PhysicalKey.V, PhysicalKey.B, PhysicalKey.N,
+            PhysicalKey.M, PhysicalKey.Comma, PhysicalKey.Period, PhysicalKey.Slash, PhysicalKey.ShiftRight,
+            PhysicalKey.NumPadMultiply, PhysicalKey.AltLeft, PhysicalKey.Space, PhysicalKey.CapsLock,
+        };
+        for (int i = 0; i < row3.Length; i++) Set(44 + i, row3[i]);
+        PhysicalKey[] f1to10 =
+        {
+            PhysicalKey.F1, PhysicalKey.F2, PhysicalKey.F3, PhysicalKey.F4, PhysicalKey.F5,
+            PhysicalKey.F6, PhysicalKey.F7, PhysicalKey.F8, PhysicalKey.F9, PhysicalKey.F10,
+        };
+        for (int i = 0; i < f1to10.Length; i++) Set(59 + i, f1to10[i]);
+        Set(69, PhysicalKey.NumLock);
+        PhysicalKey[] pad =
+        {
+            PhysicalKey.NumPad7, PhysicalKey.NumPad8, PhysicalKey.NumPad9, PhysicalKey.NumPadSubtract,
+            PhysicalKey.NumPad4, PhysicalKey.NumPad5, PhysicalKey.NumPad6, PhysicalKey.NumPadAdd,
+            PhysicalKey.NumPad1, PhysicalKey.NumPad2, PhysicalKey.NumPad3, PhysicalKey.NumPad0,
+            PhysicalKey.NumPadDecimal,
+        };
+        for (int i = 0; i < pad.Length; i++) Set(71 + i, pad[i]);
+        Set(86, PhysicalKey.IntlBackslash);
+        Set(87, PhysicalKey.F11); Set(88, PhysicalKey.F12);
+        Set(96, PhysicalKey.NumPadEnter); Set(97, PhysicalKey.ControlRight);
+        Set(98, PhysicalKey.NumPadDivide); Set(100, PhysicalKey.AltRight);
+        Set(102, PhysicalKey.Home); Set(103, PhysicalKey.ArrowUp); Set(104, PhysicalKey.PageUp);
+        Set(105, PhysicalKey.ArrowLeft); Set(106, PhysicalKey.ArrowRight); Set(107, PhysicalKey.End);
+        Set(108, PhysicalKey.ArrowDown); Set(109, PhysicalKey.PageDown); Set(110, PhysicalKey.Insert);
+        Set(111, PhysicalKey.Delete); Set(117, PhysicalKey.NumPadEqual);
+        Set(125, PhysicalKey.MetaLeft); Set(126, PhysicalKey.MetaRight);
+        Set(138, PhysicalKey.Help);
+        return t;
+    }
 }

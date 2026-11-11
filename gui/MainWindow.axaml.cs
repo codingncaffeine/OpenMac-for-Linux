@@ -8,6 +8,7 @@ using Avalonia.Interactivity;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Platform.Storage;
+using Avalonia.Threading;
 using OpenMac.Gui.Dialogs;
 using OpenMac.Gui.Emulation;
 using OpenMac.Gui.Platform;
@@ -54,8 +55,12 @@ public partial class MainWindow : Window
     private ulong _capturedMotionPackets;
     private long _capturedMouseDx, _capturedMouseDy;
     private static readonly Cursor HiddenCursor = new(StandardCursorType.None);
-    // The real pointer lock where the backend allows one (X11 and Xwayland).
-    private X11PointerCapture? _grab;
+    // The real capture where the backend allows one (X11 and Xwayland): pointer
+    // lock, and the keyboard taken from the desktop while input is captured.
+    private X11InputCapture? _grab;
+    // Set OPENMAC_INPUT_TRACE=1 to log every key and button handed to the Mac.
+    private static readonly bool InputTrace =
+        Environment.GetEnvironmentVariable("OPENMAC_INPUT_TRACE") == "1";
     // ADB codes currently held down. A key is pressed on the Mac once however
     // long the host repeats it, and everything still held is lifted when the
     // window loses focus -- the host never sends those releases to us.
@@ -86,9 +91,15 @@ public partial class MainWindow : Window
             IPlatformHandle? handle = TryGetPlatformHandle();
             Log.Line($"window: platform handle {handle?.HandleDescriptor ?? "(none)"} 0x{handle?.Handle ?? 0:X}, "
                      + $"scaling {RenderScaling:0.##}");
-            _grab = X11PointerCapture.TryCreate(handle, Log.Line);
+            // The capture's callbacks arrive on its own thread; the machine is
+            // only ever driven from this one.
+            _grab = X11InputCapture.TryCreate(handle, Log.Line,
+                (button, down) => Dispatcher.UIThread.Post(() => OnGrabButton(button, down)),
+                (code, down) => Dispatcher.UIThread.Post(() => OnGrabKey(code, down)),
+                state => Dispatcher.UIThread.Post(() => OnGrabState(state)));
             if (_grab is null)
-                Log.Line("input: no pointer lock on this backend; captured motion is measured over the screen only");
+                Log.Line("input: no input capture on this backend; captured motion is measured over the "
+                         + "screen only and desktop shortcuts stay with the desktop");
             RequestAnimationFrame(OnAnimationFrame);
         };
         Loaded += (_, _) =>
@@ -343,28 +354,21 @@ public partial class MainWindow : Window
         // While captured, buttons are taken at the window before anything under
         // the hidden pointer sees them: it sits wherever the lock left it, which
         // may be over the menu bar or the status line rather than the screen.
+        // With the X11 capture engaged the grab delivers the buttons instead
+        // (OnGrabButton) and none arrive here.
         AddHandler(PointerPressedEvent, (_, e) =>
         {
             if (!_mouseLocked) return;
             PointerPointProperties props = e.GetCurrentPoint(this).Properties;
             e.Handled = true;
             if (props.IsMiddleButtonPressed) { UnlockMouse(); return; }
-            if (!props.IsLeftButtonPressed || _guestMouseDown) return;
-            FlushMouseMotion();
-            _guestMouseDown = true;
-            _emulator.MouseButton(true);
+            if (props.IsLeftButtonPressed) GuestButton(true);
         }, RoutingStrategies.Tunnel);
         AddHandler(PointerReleasedEvent, (_, e) =>
         {
             if (!_mouseLocked) return;
             e.Handled = true;
-            if (e.InitialPressMouseButton != MouseButton.Left) return;
-            // A release belonging to the capture gesture has no matching guest
-            // press. A real guest click is forwarded exactly once.
-            if (!_guestMouseDown) return;
-            FlushMouseMotion();
-            _guestMouseDown = false;
-            _emulator.MouseButton(false);
+            if (e.InitialPressMouseButton == MouseButton.Left) GuestButton(false);
         }, RoutingStrategies.Tunnel);
 
         // Keys are taken before the focused control sees them, so Tab and the
@@ -385,25 +389,86 @@ public partial class MainWindow : Window
         int code = AdbKeys.Map(e.PhysicalKey);
         if (code < 0) return;
         e.Handled = true;
-        // A real ADB keyboard reports one DOWN per press; auto-repeat is the
-        // guest OS's job (KeyThresh). Forwarding host repeats gives the Mac
-        // phantom transitions, which garbles anything that counts keystrokes.
-        if (_keysDown.Add(code)) _emulator.KeyEvent(code, true);
+        GuestKey(code, true);
     }
 
     private void OnKeyUp(object? sender, KeyEventArgs e)
     {
         int code = AdbKeys.Map(e.PhysicalKey);
-        if (code < 0 || !_keysDown.Remove(code)) return;
+        if (code < 0 || !_keysDown.Contains(code)) return;
         e.Handled = true;
-        _emulator.KeyEvent(code, false);
+        GuestKey(code, false);
+    }
+
+    /// <summary>One key transition for the Mac. A real ADB keyboard reports one
+    /// DOWN per press; auto-repeat is the guest OS's job (KeyThresh). Forwarding
+    /// host repeats gives the Mac phantom transitions, which garbles anything
+    /// that counts keystrokes.</summary>
+    private void GuestKey(int code, bool down)
+    {
+        if (down ? !_keysDown.Add(code) : !_keysDown.Remove(code)) return;
+        if (InputTrace) Log.Line($"input trace: key ${code:X2} {(down ? "down" : "up")}");
+        _emulator.KeyEvent(code, down);
+    }
+
+    /// <summary>One button transition for the Mac. A release belonging to the
+    /// capture click has no matching guest press and is dropped; a real guest
+    /// click is forwarded exactly once.</summary>
+    private void GuestButton(bool down)
+    {
+        if (!_mouseLocked || !_emulator.IsRomLoaded || _guestMouseDown == down) return;
+        FlushMouseMotion();
+        _guestMouseDown = down;
+        if (InputTrace) Log.Line($"input trace: button {(down ? "down" : "up")}");
+        _emulator.MouseButton(down);
+    }
+
+    // ---- keys and buttons taken by the X11 capture ----
+    private void OnGrabButton(int button, bool down)
+    {
+        if (!_mouseLocked) return;
+        if (button == 2) { if (down) UnlockMouse(); return; }
+        if (button == 1) GuestButton(down);
+    }
+
+    private void OnGrabKey(int evdev, bool down)
+    {
+        if (!_mouseLocked) return;
+        // F11 stays the host's fullscreen toggle even while captured, or there
+        // would be no keyboard way back out of fullscreen capture.
+        if (evdev == AdbKeys.EvdevF11)
+        {
+            if (down) ToggleFullscreen();
+            return;
+        }
+        int code = AdbKeys.MapEvdev(evdev);
+        if (code < 0 || !_emulator.IsRomLoaded) return;
+        GuestKey(code, down);
+    }
+
+    private void OnGrabState(X11InputCapture.State state)
+    {
+        if (!_mouseLocked) return;
+        if (state == X11InputCapture.State.Engaged)
+        {
+            Log.Line("input: capture engaged -- pointer locked, keyboard grabbed");
+            return;
+        }
+        // Something else holds the pointer or the keyboard. Let go rather than
+        // sit in a half capture that hides the pointer without holding it.
+        UnlockMouse();
+        StatusState.Text = "Could not capture input";
     }
 
     /// <summary>Lift every key still held, so losing focus mid-combo cannot
     /// leave the Mac with a stuck modifier.</summary>
     private void ReleaseKeys()
     {
-        foreach (int code in _keysDown) _emulator.KeyEvent(code, false);
+        foreach (int code in _keysDown)
+        {
+            if (InputTrace) Log.Line($"input trace: key ${code:X2} up (released with the capture)");
+            _emulator.KeyEvent(code, false);
+        }
         _keysDown.Clear();
     }
 
@@ -413,7 +478,7 @@ public partial class MainWindow : Window
     // transition in order -- modifiers land first and lift last, like fingers.
     private static readonly Dictionary<string, int> ComboKeys = new()
     {
-        ["cmd"] = 0x37, ["shift"] = 0x38, ["opt"] = 0x3A, ["ctrl"] = 0x3B,
+        ["cmd"] = 0x37, ["shift"] = 0x38, ["opt"] = 0x3A, ["ctrl"] = 0x36,
         ["esc"] = 0x35, ["period"] = 0x2F,
         ["a"] = 0x00, ["c"] = 0x08, ["n"] = 0x2D, ["o"] = 0x1F, ["p"] = 0x23,
         ["q"] = 0x0C, ["s"] = 0x01, ["v"] = 0x09, ["w"] = 0x0D, ["x"] = 0x07,
@@ -484,7 +549,7 @@ public partial class MainWindow : Window
         Cursor = HiddenCursor;   // hidden over the whole window: the lock may park it anywhere in it
         _grab?.Lock();
         Title = _baseTitle + "   —   input captured: keys go to the Mac (middle-click to release)";
-        Log.Line($"input: pointer captured backend={_emulator.BackendName} "
+        Log.Line($"input: capture requested backend={_emulator.BackendName} "
                  + $"lock={(_grab is null ? "none" : "x11")}");
     }
 
@@ -500,10 +565,13 @@ public partial class MainWindow : Window
         _mouseLocked = false;
         _lastPointer = null;
         _grab?.Unlock();
+        // Keys held when the capture ends are lifted here: once the keyboard
+        // grab is gone their releases go to whatever has focus, not to us.
+        ReleaseKeys();
         ScreenImage.Cursor = null;
         Cursor = null;
         Title = _baseTitle;
-        Log.Line($"input: pointer released packets={_capturedMotionPackets} "
+        Log.Line($"input: capture released packets={_capturedMotionPackets} "
                  + $"delta={_capturedMouseDx}/{_capturedMouseDy} "
                  + (_grab is null ? "source=pointer" : "source=xi2-raw " + _grab.Stats()));
     }

@@ -43,3 +43,10 @@ roms/
 # openmac_iifx_matrix --emit whenever the checkpoint format changes)
 tests/data/*
 !tests/data/iifx-public-matrix.jsonl
+
+# The runnable dev build (tools/build.sh)
+/bin/
+
+# Test and release scratch
+/scratch/
+/packaging/out/
