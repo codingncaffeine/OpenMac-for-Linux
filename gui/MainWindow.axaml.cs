@@ -1727,7 +1727,7 @@ public partial class MainWindow : Window
 
     private void About_Click(object? sender, RoutedEventArgs e) =>
         MessageBox.Show(this,
-            "OpenMac\nA from-scratch Macintosh emulator for Linux.\n\n"
+            $"OpenMac for Linux {Platform.NativeLibs.AppVersion}\nA from-scratch Macintosh emulator.\n\n"
             + "Macintosh Classic · Macintosh IIfx · Quadra 650\n"
             + "68000, 68030 and 68040 machines with model-specific video, storage, input, audio and PRAM.",
             "About OpenMac", MessageBoxButton.OK, MessageBoxImage.Information);

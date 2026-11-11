@@ -13,7 +13,11 @@ public partial class App : Application
     public override void OnFrameworkInitializationCompleted()
     {
         Log.Init();
-        Log.Line("app startup");
+        Log.Line($"app startup: OpenMac for Linux {Platform.NativeLibs.AppVersion} "
+                 + $"({System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier}, "
+                 + $"{System.Runtime.InteropServices.RuntimeInformation.OSDescription})");
+        // Loading a library is file work; keep it off the UI thread.
+        Task.Run(() => Log.Line(Platform.NativeLibs.DescribeSdl3()));
 
         Dispatcher.UIThread.UnhandledException += OnDispatcherUnhandled;
         AppDomain.CurrentDomain.UnhandledException += (_, ev) =>
