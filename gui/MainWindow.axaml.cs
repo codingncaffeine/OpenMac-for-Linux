@@ -305,9 +305,14 @@ public partial class MainWindow : Window
             _speedShownAt = tick;
             StatusSpeed.Text = _emulator.IsRomLoaded
                 ? $"speed {_emulator.SpeedPercent:0}%   •   " : "";
+            if (_emulator.IsRomLoaded && tick - _speedLoggedAt >= 10_000)
+            {
+                _speedLoggedAt = tick;
+                Log.Line($"speed: {_emulator.SpeedPercent:0}%");
+            }
         }
     }
-    private long _speedShownAt;
+    private long _speedShownAt, _speedLoggedAt;
 
     private void CopyFrame(ILockedFramebuffer fb, int w, int h)
     {

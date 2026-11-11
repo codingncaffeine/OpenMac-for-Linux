@@ -21,5 +21,17 @@ export XDG_CONFIG_HOME="$TMP/config" XDG_DATA_HOME="$TMP/data" XDG_STATE_HOME="$
        XDG_CACHE_HOME="$TMP/cache" XDG_RUNTIME_DIR="$TMP/rt"
 export NO_AT_BRIDGE=1 GDK_BACKEND=x11
 unset WAYLAND_DISPLAY DISPLAY
-"$HERE/silent.sh" xvfb-run -a -s "-screen 0 ${OPENMAC_TEST_SCREEN:-1280x1024x24}" \
-  dbus-run-session --config-file="$HERE/isolated-bus.conf" -- "$@"
+# The X server picks its own free display number and reports it (-displayfd), so
+# runs started at the same moment can never end up sharing one server.
+export OPENMAC_TEST_SCREEN="${OPENMAC_TEST_SCREEN:-1280x1024x24}" OPENMAC_TEST_TMP="$TMP" OPENMAC_TEST_BUS="$HERE/isolated-bus.conf"
+"$HERE/silent.sh" bash -c '
+  rm -f "$OPENMAC_TEST_TMP/display"
+  Xvfb -displayfd 3 -screen 0 "$OPENMAC_TEST_SCREEN" -nolisten tcp 3>"$OPENMAC_TEST_TMP/display" 2>/dev/null &
+  server=$!
+  for _ in $(seq 200); do [ -s "$OPENMAC_TEST_TMP/display" ] && break; sleep 0.05; done
+  [ -s "$OPENMAC_TEST_TMP/display" ] || { echo "headless: the virtual X server did not start" >&2; kill $server 2>/dev/null; exit 4; }
+  export DISPLAY=":$(cat "$OPENMAC_TEST_TMP/display")"
+  dbus-run-session --config-file="$OPENMAC_TEST_BUS" -- "$@"; rc=$?
+  kill $server 2>/dev/null; wait $server 2>/dev/null
+  exit $rc
+' headless "$@"
