@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/banner.png" alt="OpenMac for Linux" width="820"></p>
+
 # OpenMac for Linux
 
 A from-scratch Macintosh emulator for Linux: three machines over one shared
@@ -6,8 +8,9 @@ core, implemented from period hardware documentation. This is the Linux port of
 the same front end, with the Windows plumbing swapped for Linux equivalents
 (WPF → Avalonia, waveOut → SDL3).
 
-> **Status:** the port is in progress. The core builds and passes its tests on
-> Linux; the Avalonia front end is being brought up.
+> **Status:** alpha. All three machines boot and run in the Linux front end,
+> with sound, captured mouse and keyboard, floppies, hard disks, CD images and
+> the drop box. Expect rough edges, and please report what you find.
 
 - **Macintosh Classic** — 68000 (validated against the SingleStepTests suite at
   100% state accuracy), VIA 6522, ADB, IWM floppy, NCR 5380 SCSI, real-time
@@ -28,9 +31,25 @@ the same front end, with the Windows plumbing swapped for Linux equivalents
 **The [wiki](https://github.com/codingncaffeine/OpenMac/wiki) has the full story**
 — the architecture, per-chip hardware notes, and how each subsystem was brought up.
 
+## Install
+
+Downloads are on the [releases page](https://github.com/codingncaffeine/OpenMac-for-Linux/releases).
+Everything the app needs is inside, including the .NET runtime and SDL3 for sound.
+
+- **Debian and Ubuntu** — `sudo apt install ./openmac_<version>_amd64.deb`, then
+  start OpenMac from the application menu or run `openmac`.
+- **Any other glibc distro (Arch, Fedora, …)** — extract
+  `OpenMac-<version>-linux-x64.tar.gz` anywhere and run `./OpenMac`.
+- **Alpine and other musl systems** — extract
+  `OpenMac-<version>-linux-musl-x64.tar.gz` and run `./OpenMac`; it needs
+  `apk add icu-libs libstdc++ libgcc fontconfig libx11 libice libsm libxi libxfixes libxcursor libxrandr libxext`.
+
+The app is an X11 client and runs through XWayland on Wayland sessions.
+Settings, parameter RAM and the log live in `~/.config/OpenMac/`.
+
 ## Getting started
 
-1. Build (below).
+1. Install (above) or build (below).
 2. Machine ▸ Model to choose the Classic, Macintosh IIfx, or Quadra 650.
 3. File ▸ Open ROM… and choose the matching ROM dump.
 4. Insert a floppy image, or create a hard disk and install a System onto it, and boot.
@@ -40,6 +59,18 @@ only realizable four-SIMM bank totals: 4, 8, 16, 20, 32, 64, 68, 80, and
 128 MB. File ▸ Create Hard Disk includes the typical 80 MB and 160 MB choices;
 raw, DiskCopy 4.2, and MacBinary-wrapped 400K/800K/1.44 MB floppy images work in
 the internal SuperDrive.
+
+Without a card ROM the IIfx uses OpenMac's own plain video card. For the
+Display Card 8•24 GC, choose its declaration ROM (part number 341-0266) with
+Machine ▸ 8•24 GC Card ROM…. Acceleration also needs the card's own `8•24 GC` control
+panel in the Control Panels folder of the Mac's startup disk, under its
+original name: drag it onto the System Folder, let the Finder put it away, and
+restart. The rocket climbing the left edge of the screen during startup is the
+card's software coming up.
+
+Click the Mac's screen to give it the mouse and keyboard; while it has them,
+desktop shortcuts such as Super and Alt+Tab go to the Mac. Middle-click gives
+them back.
 
 ## What it does
 
@@ -68,10 +99,23 @@ The core is dependency-free C++20; the front end is a .NET 10 Avalonia app.
 You need CMake 3.25+, a C++20 compiler, the .NET 10 SDK, and SDL3 (for audio).
 
 ```
+tools/build.sh        # core + tests + app; the runnable build lands in bin/
+bin/openmac
+```
+
+or step by step:
+
+```
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 dotnet build gui -c Release
 ```
+
+The build is checked on glibc and on musl (`tools/alpine-build.sh` builds it in
+an Alpine container with Alpine's own compiler and .NET SDK).
+`packaging/build-release.sh` makes the release archives and the `.deb`;
+`packaging/smoke-test.sh` and `packaging/install-test.sh` launch them here and
+in clean Debian, Ubuntu, Fedora and Alpine containers.
 
 MIT licensed. Clean-room: primary sources are the chip datasheets and Apple's
 published hardware documentation; other emulators were consulted only as
