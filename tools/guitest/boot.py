@@ -20,6 +20,8 @@ ap.add_argument("--rom", required=True)
 ap.add_argument("--floppy")
 ap.add_argument("--hard-disk")
 ap.add_argument("--burst")
+ap.add_argument("--set", action="append", default=[], metavar="KEY=JSON",
+                help="one more settings.json field, e.g. --set DropBox=true")
 ap.add_argument("--video-rom")
 ap.add_argument("--ram", type=int)
 ap.add_argument("--seconds", type=int, default=30)
@@ -44,6 +46,9 @@ if a.hard_disk:
 suffix = {"classic": "", "iifx": "Iifx", "quadra650": "Quadra"}[a.model]
 settings = {"Model": a.model, "Scale": 1, "LastRom" + suffix: os.path.abspath(a.rom),
             "LastFloppy" + suffix: floppy, "LastHardDisk" + suffix: hard_disk, "ExternalDrive": False}
+for item in a.set:
+    key, value = item.split("=", 1)
+    settings[key] = json.loads(value)
 if a.video_rom: settings["VideoRomIifx"] = os.path.abspath(a.video_rom)
 if a.ram: settings["RamMB" + suffix] = a.ram
 with open(os.path.join(profile, "settings.json"), "w") as f:
@@ -115,7 +120,7 @@ else:
 bad = [l for l in log.splitlines() if re.search(r"UNHANDLED|FATAL|frame tick failed|load failed|could not", l)]
 check(not bad, "no errors in the app's log" + (": " + bad[0][:160] if bad else ""))
 for line in log.splitlines():
-    if re.search(r"video|8•24|monitor|GC ROM|EXC vec=3|\[disk\]|SuperDrive|mounted", line) and "[core] boot f=" not in line:
+    if re.search(r"video|8•24|monitor|GC ROM|EXC vec=3|\[disk\]|SuperDrive|SCSI disk|mounted|drop box|folder disk", line) and "[core] boot f=" not in line:
         print("        " + line[25:185])
 print("BOOT TEST " + ("PASSED" if not failures else f"FAILED ({len(failures)})"))
 sys.exit(1 if failures else 0)

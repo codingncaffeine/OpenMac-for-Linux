@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.codingncaffeine.OpenMac</id>
+  <name>OpenMac</name>
+  <summary>Macintosh emulator written from scratch</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.codingncaffeine">
+    <name>codingncaffeine</name>
+  </developer>
+  <description>
+    <p>
+      OpenMac emulates three Macintosh computers: the Macintosh Classic, the Macintosh IIfx and
+      the Quadra 650. Each machine has its own processor core, video, storage, input, sound and
+      parameter RAM, written from scratch from public documentation.
+    </p>
+    <p>
+      OpenMac contains no original Macintosh code. You supply the ROM of the machine you own and
+      your own system disks. Floppy images, hard disk images, CD images and host folders can be used as
+      disks, and files can be passed in and out through a drop box folder.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.codingncaffeine.OpenMac.desktop</launchable>
+  <url type="homepage">https://github.com/codingncaffeine/OpenMac-for-Linux</url>
+  <url type="bugtracker">https://github.com/codingncaffeine/OpenMac-for-Linux/issues</url>
+  <categories>
+    <category>System</category>
+    <category>Emulator</category>
+  </categories>
+  <provides>
+    <binary>openmac</binary>
+  </provides>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.0.3" date="2026-11-11" type="development">
+      <description>
+        <p>First alpha release for Linux.</p>
+      </description>
+    </release>
+  </releases>
+</component>

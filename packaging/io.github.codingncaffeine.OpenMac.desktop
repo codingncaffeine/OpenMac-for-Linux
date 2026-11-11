@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=OpenMac
+GenericName=Macintosh Emulator
+Comment=Emulates the Macintosh Classic, Macintosh IIfx and Quadra 650
+Exec=openmac
+Icon=openmac
+Terminal=false
+Categories=System;Emulator;
+Keywords=mac;macintosh;emulator;68k;classic;quadra;
+StartupWMClass=OpenMac

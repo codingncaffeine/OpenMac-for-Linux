@@ -10,6 +10,8 @@ cmake-build-*/
 # Packaged release trees and their archives
 dist/
 *.zip
+/packaging/out/
+/packaging/cache/
 
 # Dev-shell local state
 imgui.ini
