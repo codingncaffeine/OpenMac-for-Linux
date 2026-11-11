@@ -2,10 +2,12 @@
 """Boots one machine in the real window and reports what the log and the screen say.
 
     tools/headless.sh python3 tools/guitest/boot.py --model classic|iifx|quadra650 --rom FILE
-        [--floppy FILE] [--video-rom FILE] [--ram MB] [--seconds N] [--shot OUT.png] [--app FILE]
+        [--floppy FILE] [--hard-disk FILE] [--video-rom FILE] [--ram MB] [--seconds N]
+        [--shot OUT.png] [--burst FROM:TO:PREFIX] [--speed-band LO:HI] [--app FILE]
 
-The floppy is copied to the scratch profile first, so the original is never
-written. Passes when the window shows guest frames for the whole run, the machine
+The floppy and the hard disk are copied to the scratch profile first, so the
+originals are never written. --burst saves a screenshot about four times a
+second between FROM and TO seconds after the start, as PREFIX-NN.png. Passes when the window shows guest frames for the whole run, the machine
 keeps to the speed band, sound is fed without underruns (on the machines that
 report it), and the log holds no error.
 """
@@ -16,6 +18,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--model", required=True, choices=["classic", "iifx", "quadra650"])
 ap.add_argument("--rom", required=True)
 ap.add_argument("--floppy")
+ap.add_argument("--hard-disk")
+ap.add_argument("--burst")
 ap.add_argument("--video-rom")
 ap.add_argument("--ram", type=int)
 ap.add_argument("--seconds", type=int, default=30)
@@ -33,9 +37,13 @@ floppy = None
 if a.floppy:
     floppy = os.path.join(profile, os.path.basename(a.floppy))
     shutil.copyfile(a.floppy, floppy)
+hard_disk = None
+if a.hard_disk:
+    hard_disk = os.path.join(profile, os.path.basename(a.hard_disk))
+    shutil.copyfile(a.hard_disk, hard_disk)
 suffix = {"classic": "", "iifx": "Iifx", "quadra650": "Quadra"}[a.model]
 settings = {"Model": a.model, "Scale": 1, "LastRom" + suffix: os.path.abspath(a.rom),
-            "LastFloppy" + suffix: floppy, "ExternalDrive": False}
+            "LastFloppy" + suffix: floppy, "LastHardDisk" + suffix: hard_disk, "ExternalDrive": False}
 if a.video_rom: settings["VideoRomIifx"] = os.path.abspath(a.video_rom)
 if a.ram: settings["RamMB" + suffix] = a.ram
 with open(os.path.join(profile, "settings.json"), "w") as f:
@@ -48,12 +56,22 @@ app = subprocess.Popen([a.app], stdout=subprocess.DEVNULL, stderr=open(err_path,
 alive, died = True, ""
 try:
     end = started + a.seconds
+    burst_from = burst_to = None
+    if a.burst:
+        f, t, burst_prefix = a.burst.split(":", 2)
+        burst_from, burst_to, burst_n = started + float(f), started + float(t), 0
+        os.makedirs(os.path.dirname(os.path.abspath(burst_prefix)), exist_ok=True)
     while time.time() < end:
         if app.poll() is not None:
             alive = False
             died = f": it exited with code {app.returncode} after {time.time() - started:.0f} s"
             break
-        time.sleep(0.5)
+        if burst_from is not None and burst_from <= time.time() <= burst_to:
+            subprocess.run(["import", "-window", "root", f"{burst_prefix}-{burst_n:02d}.png"], stderr=subprocess.DEVNULL)
+            burst_n += 1
+            time.sleep(0.1)
+            continue
+        time.sleep(0.25)
     if a.shot and alive:
         os.makedirs(os.path.dirname(os.path.abspath(a.shot)), exist_ok=True)
         subprocess.run(["import", "-window", "root", a.shot], stderr=subprocess.DEVNULL)
