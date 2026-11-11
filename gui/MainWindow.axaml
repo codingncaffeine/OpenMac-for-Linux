@@ -169,13 +169,13 @@
 
         <Border DockPanel.Dock="Bottom" Background="{DynamicResource Surface}"
                 BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Padding="10,3">
-            <Grid>
-                <StackPanel Orientation="Horizontal">
-                    <TextBlock x:Name="StatusState" Text="Stopped" Classes="secondary" />
-                    <TextBlock Text="   " />
-                    <TextBlock x:Name="StatusMachine" Text="No ROM loaded" Classes="secondary" />
-                </StackPanel>
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <!-- The machine summary gives way (with an ellipsis) when the window is
+                 narrow, so it never runs under the speed readout. -->
+            <Grid ColumnDefinitions="Auto,*,Auto">
+                <TextBlock x:Name="StatusState" Text="Stopped" Classes="secondary" Margin="0,0,12,0" />
+                <TextBlock x:Name="StatusMachine" Grid.Column="1" Text="No ROM loaded" Classes="secondary"
+                           TextTrimming="CharacterEllipsis" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="16,0,0,0">
                     <TextBlock x:Name="StatusSpeed" Text="" Classes="secondary"
                                ToolTip.Tip="Emulation speed over the last second: guest frames run against real time. 100% is a real machine." />
                     <TextBlock x:Name="StatusBackend" Text="core: stub" Classes="secondary" />
