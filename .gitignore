@@ -20,6 +20,7 @@ _plans/
 
 # Apple ROMs and disk images — user-supplied, never committed
 /gitignore/
+/ROM/
 *.rom
 roms/
 *.img
