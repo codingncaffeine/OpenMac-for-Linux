@@ -10,7 +10,7 @@ the same front end, with the Windows plumbing swapped for Linux equivalents
 
 > **Status:** alpha. All three machines boot and run in the Linux front end,
 > with sound, captured mouse and keyboard, floppies, hard disks and the drop
-> box. CD images and networking are in but have not been tested on Linux yet.
+> box. A CD image mounts on the Quadra 650 and can start it; CD images on the other two machines and networking have not been tested on Linux yet.
 > Expect rough edges, and please report what you find.
 
 - **Macintosh Classic** — 68000 (validated against the SingleStepTests suite at
@@ -81,7 +81,8 @@ them back.
 - **Hard disks** — create a blank HFS volume in the app, install a System onto
   it, and boot from it; volumes are settled however the session ends, so a disk
   stays bootable
-- **CD-ROM** — attach a disc image and it mounts on the desktop
+- **CD-ROM** — attach a disc image and it mounts on the desktop; on the Quadra 650
+  a startup disc such as a Mac OS install CD starts the machine
 - **Drop box** — a folder on your computer, kept mounted inside the Mac as a
   volume; files dropped on the window land in it
 - **Parameter RAM persists**, so the startup disk, sound volume, 32-bit

@@ -4,7 +4,7 @@
 #   ssh://aur@aur.archlinux.org/openmac-bin.git
 #   makepkg --printsrcinfo > .SRCINFO
 pkgname=openmac-bin
-pkgver=0.0.3
+pkgver=0.7.1
 pkgrel=1
 pkgdesc="Macintosh emulator written from scratch: Macintosh Classic, Macintosh IIfx and Quadra 650"
 arch=('x86_64')

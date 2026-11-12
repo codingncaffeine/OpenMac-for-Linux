@@ -32,6 +32,11 @@
   </provides>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.7.1" date="2026-11-12">
+      <description>
+        <p>The Quadra 650 starts up from a CD and shows thousands of colors. Restart fixes on the Quadra 650 and the Macintosh IIfx. Version numbers now match OpenMac for Windows.</p>
+      </description>
+    </release>
     <release version="0.0.3" date="2026-11-11">
       <description>
         <p>First alpha release for Linux.</p>
