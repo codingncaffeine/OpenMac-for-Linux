@@ -73,17 +73,30 @@ smoke_one() {
         return 2
     fi
     # OpenMac keeps settings and its log under $XDG_CONFIG_HOME/OpenMac. Every XDG
-    # folder points into the scratch tree, and the real profile is checked afterwards.
-    local xdg=$tmp/xdg real=$HOME/.config/OpenMac before=""
+    # folder points into the scratch tree. Where the real profile exists and bubblewrap
+    # works, the launch sees an empty trap folder in its place: the real one cannot be
+    # written, and anything in the trap afterwards was written by this launch and by
+    # nothing else. A before/after comparison is the fallback; it cannot tell this
+    # launch from an OpenMac the user has open.
+    local xdg=$tmp/xdg real=$HOME/.config/OpenMac before="" trap_dir=$tmp/real-profile-trap
+    local -a wall=()
     mkdir -p "$xdg/config" "$xdg/data" "$xdg/cache" "$xdg/state"
-    [[ -e $real ]] && before=$(find "$real" -type f -printf '%p %T@\n' 2>/dev/null | sort | md5sum)
+    if [[ -e $real ]]; then
+        if command -v bwrap >/dev/null && bwrap --dev-bind / / true 2>/dev/null; then
+            mkdir -p "$trap_dir"
+            wall=(bwrap --dev-bind / / --bind "$trap_dir" "$real" --)
+        else
+            before=$(find "$real" -type f -printf '%p %T@\n' 2>/dev/null | sort | md5sum)
+        fi
+    fi
+    local real_existed=0; [[ -e $real ]] && real_existed=1
 
     local out=$tmp/launch.out rc start elapsed
     start=$SECONDS
     ( cd "$payload" &&
       exec env XDG_CONFIG_HOME="$xdg/config" XDG_DATA_HOME="$xdg/data" \
                XDG_CACHE_HOME="$xdg/cache" XDG_STATE_HOME="$xdg/state" \
-               timeout -k 5 "$LAUNCH_SECONDS" ./OpenMac ) > "$out" 2>&1
+               "${wall[@]}" timeout -k 5 "$LAUNCH_SECONDS" ./OpenMac ) > "$out" 2>&1
     rc=$?
     elapsed=$((SECONDS - start))
     # timeout exits 124 when it had to stop the app (137 if TERM was ignored): the app was still up.
@@ -119,10 +132,13 @@ smoke_one() {
     if grep -qE 'UNHANDLED|FATAL' "$log"; then
         fail "the app logged an error:"; grep -E 'UNHANDLED|FATAL' "$log" | sed 's/^/           | /' | head -5
     fi
-    if [[ -e $real ]]; then
+    if (( ${#wall[@]} )); then
+        if [[ -z "$(ls -A "$trap_dir")" ]]; then ok "nothing written to the real profile path"
+        else fail "the launch wrote to the REAL profile path $real: $(ls -A "$trap_dir" | head -3 | tr '\n' ' ')"; fi
+    elif [[ -n $before ]]; then
         [[ $before == "$(find "$real" -type f -printf '%p %T@\n' 2>/dev/null | sort | md5sum)" ]] ||
-            fail "the launch touched the REAL profile $real"
-    elif [[ -z $before && -e $real ]]; then
+            fail "the REAL profile $real changed during the launch"
+    elif (( ! real_existed )) && [[ -e $real ]]; then
         fail "the launch created the REAL profile $real"
     fi
     return $FAILED
