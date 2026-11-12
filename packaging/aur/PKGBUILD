@@ -30,8 +30,16 @@ source=("$url/releases/download/v$pkgver/OpenMac-$pkgver-linux-x64.tar.gz"
         "openmac-128.png::$_raw/icons/openmac-128.png"
         "openmac-256.png::$_raw/icons/openmac-256.png"
         "openmac-512.png::$_raw/icons/openmac-512.png")
-sha256sums=('FILL_IN_AT_RELEASE'
-            'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+sha256sums=('6d61a9141886b3f6d7ddfac0b2be09f755fcacdef5ee92335a578f1601687e36'
+            '1a4dc208d598c87ed93446d2c91eb95450ac40d66ee334d5d028f2fb12928627'
+            'fdf9d682477e50a84b87867ccbe08df04e2c9cfc3d0ee8a1cc35eee3657135e7'
+            '86f5118ce3d69682d8696864564762204cc8a13cdc4db965dcbea643164d732d'
+            '5911f2ab75dbae09fbe2ca94edac11bc45c656758bc13e84f441c82046d7d569'
+            'b9654dbd8f947cc2e3a05edc1aeceb2bc092e38dc85343ed95cd0d33804f5860'
+            '82b8f5dc12ca89d1b4cbba20e01386b740a648e36db99f408b768bc5d82df19d'
+            'c7dd3b4ed2a828b4b9f2ae37375a300e4b3da64e733096b66fc779ffd03a8150'
+            '30d67269d1575a87ddebd39bbca3786a68c6e2c196ef98253de2989ebdbddac8'
+            '529c5bf86332b6ea5405988caec2509fa7fc8f7631d8e47857724c88ffc65859')
 
 package() {
     local _payload="$srcdir/OpenMac-$pkgver-linux-x64"
