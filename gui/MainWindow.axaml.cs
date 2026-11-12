@@ -1690,14 +1690,70 @@ public partial class MainWindow : Window
         UpdateUi();
     }
 
+    /// <summary>Size the window to the Mac's screen at the chosen scale. The
+    /// window never grows past the work area of the display it is on (a
+    /// 1152x870 Mac screen at 2x is larger than most), where the picture is
+    /// shown as large as fits instead; and it is moved back inside that area
+    /// if the new size would leave part of it, title bar included, outside.</summary>
     private void ApplyScale()
     {
         if (_settings.Scale <= 0 || _fullscreen) return;
+        if (WindowState != WindowState.Normal) return;   // a maximized window keeps its size
         if (ScreenHost.Bounds.Width <= 0) return;
         double chromeW = ClientSize.Width - ScreenHost.Bounds.Width;
         double chromeH = ClientSize.Height - ScreenHost.Bounds.Height;
-        Width = _emulator.ScreenWidth * _settings.Scale + chromeW;
-        Height = _emulator.ScreenHeight * _settings.Scale + chromeH;
+        double w = _emulator.ScreenWidth * _settings.Scale;
+        double h = _emulator.ScreenHeight * _settings.Scale;
+
+        Screen? screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
+        if (screen is null)
+        {
+            Width = w + chromeW;
+            Height = h + chromeH;
+            return;
+        }
+        double dpi = screen.Scaling > 0 ? screen.Scaling : 1.0;
+        PixelRect area = screen.WorkingArea;
+        // Title bar and borders, when the window manager has reported them.
+        double frameW = Math.Max(0, (FrameSize?.Width ?? ClientSize.Width) - ClientSize.Width);
+        double frameH = Math.Max(0, (FrameSize?.Height ?? ClientSize.Height) - ClientSize.Height);
+        double maxW = area.Width / dpi - frameW - chromeW;
+        double maxH = area.Height / dpi - frameH - chromeH;
+        double fit = Math.Min(1.0, Math.Min(maxW / w, maxH / h));
+        if (fit > 0 && fit < 1.0)
+        {
+            w = Math.Floor(w * fit);
+            h = Math.Floor(h * fit);
+            Log.Line($"window: {_emulator.ScreenWidth}x{_emulator.ScreenHeight} at {_settings.Scale}x does not fit "
+                     + $"the display's {area.Width}x{area.Height} work area; shown at {w}x{h}");
+        }
+        Width = w + chromeW;
+        Height = h + chromeH;
+        KeepOnScreen();
+        // The window system applies a size and reports a position some time
+        // after they are asked for (and has not placed a window that is only
+        // now opening), so look once more when it has settled.
+        DispatcherTimer.RunOnce(KeepOnScreen, TimeSpan.FromMilliseconds(300));
+    }
+
+    /// <summary>Move the window back inside its display's work area if any
+    /// part of it, title bar included, lies outside.</summary>
+    private void KeepOnScreen()
+    {
+        if (_fullscreen || WindowState != WindowState.Normal) return;
+        Screen? screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
+        if (screen is null) return;
+        double dpi = screen.Scaling > 0 ? screen.Scaling : 1.0;
+        PixelRect area = screen.WorkingArea;
+        double frameW = Math.Max(0, (FrameSize?.Width ?? ClientSize.Width) - ClientSize.Width);
+        double frameH = Math.Max(0, (FrameSize?.Height ?? ClientSize.Height) - ClientSize.Height);
+        int outerW = (int)Math.Ceiling((Width + frameW) * dpi);
+        int outerH = (int)Math.Ceiling((Height + frameH) * dpi);
+        int x = Math.Clamp(Position.X, area.X, Math.Max(area.X, area.Right - outerW));
+        int y = Math.Clamp(Position.Y, area.Y, Math.Max(area.Y, area.Bottom - outerH));
+        if (x == Position.X && y == Position.Y) return;
+        Log.Line($"window: moved from {Position.X},{Position.Y} to {x},{y} to stay on the display");
+        Position = new PixelPoint(x, y);
     }
 
     private void Fullscreen_Click(object? sender, RoutedEventArgs e) => ToggleFullscreen();
