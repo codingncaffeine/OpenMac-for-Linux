@@ -21,7 +21,7 @@ public partial class CreateHardDiskDialog : Window
         InitializeComponent();
 
         foreach (int mb in HardDiskImage.CommonSizesMB)
-            SizeBox.Items.Add($"{mb} MB");
+            SizeBox.Items.Add(HardDiskImage.SizeLabel(mb));
         SizeBox.SelectedIndex = settings.IsIifx
             ? Array.IndexOf(HardDiskImage.CommonSizesMB, 80)
             : 0;
