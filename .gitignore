@@ -24,6 +24,7 @@ _plans/
 /gitignore/
 /ROM/
 *.rom
+*.ROM
 roms/
 *.img
 *.image
@@ -34,12 +35,17 @@ roms/
 *.toast
 *.cue
 *.bin
+*.BIN
+*.hda
 *.sit
 *.sea
 *.hqx
 *.cpt
 *.lha
 *.lzh
+
+# Reference documents (manuals, developer notes): read locally, never committed
+*.pdf
 
 # Locally fetched test data (SingleStepTests etc.); the synthetic IIfx
 # public boot-matrix baseline is tracked (regenerate with
