@@ -10,8 +10,8 @@
   </developer>
   <description>
     <p>
-      OpenMac emulates three Macintosh computers: the Macintosh Classic, the Macintosh IIfx and
-      the Quadra 650. Each machine has its own processor core, video, storage, input, sound and
+      OpenMac emulates four Macintosh computers: the Macintosh Classic, the Macintosh IIfx, the
+      Quadra 650 and the Quadra 950. Each machine has its own processor core, video, storage, input, sound and
       parameter RAM, written from scratch from public documentation.
     </p>
     <p>
@@ -32,6 +32,11 @@
   </provides>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.7.2" date="2026-11-12">
+      <description>
+        <p>The Macintosh Quadra 950 joins as a fourth machine. Floppy fixes on the Macintosh IIfx, corrected 12-inch and 21-inch displays on the Quadra 650, and the window stays on the display when the Mac's screen changes size.</p>
+      </description>
+    </release>
     <release version="0.7.1" date="2026-11-12">
       <description>
         <p>The Quadra 650 starts up from a CD and shows thousands of colors. Restart fixes on the Quadra 650 and the Macintosh IIfx. Version numbers now match OpenMac for Windows.</p>

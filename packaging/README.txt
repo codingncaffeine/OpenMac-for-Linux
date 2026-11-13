@@ -1,8 +1,8 @@
 OpenMac for Linux
 =================
 
-A Macintosh emulator written from scratch: Macintosh Classic, Macintosh IIfx
-and Quadra 650. This is an alpha release.
+A Macintosh emulator written from scratch: Macintosh Classic, Macintosh IIfx,
+Quadra 650 and Quadra 950. This is an alpha release.
 
 OpenMac contains no original Macintosh code. You need the ROM of the machine
 you want to run, and your own system disks.

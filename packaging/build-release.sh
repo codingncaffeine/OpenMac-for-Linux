@@ -98,8 +98,8 @@ Recommends: libpulse0, libasound2t64 | libasound2, libgl1, libegl1, xdg-utils
 Maintainer: OpenMac for Linux <codingncaffeine@users.noreply.github.com>
 Homepage: https://github.com/codingncaffeine/OpenMac-for-Linux
 Description: Macintosh emulator written from scratch
- OpenMac emulates the Macintosh Classic, the Macintosh IIfx and the Quadra 650:
- 68000, 68030 and 68040 machines with their own video, storage, input, sound and
+ OpenMac emulates the Macintosh Classic, the Macintosh IIfx, the Quadra 650 and
+ the Quadra 950: 68000, 68030 and 68040 machines with their own video, storage, input, sound and
  parameter RAM. It contains no original Macintosh code; you supply the ROM of
  the machine you own, and your own system disks.
  .

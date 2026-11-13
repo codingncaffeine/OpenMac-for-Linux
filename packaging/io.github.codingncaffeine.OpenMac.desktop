@@ -2,7 +2,7 @@
 Type=Application
 Name=OpenMac
 GenericName=Macintosh Emulator
-Comment=Emulates the Macintosh Classic, Macintosh IIfx and Quadra 650
+Comment=Emulates the Macintosh Classic, Macintosh IIfx, Quadra 650 and Quadra 950
 Exec=openmac
 Icon=openmac
 Terminal=false

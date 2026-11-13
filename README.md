@@ -2,15 +2,15 @@
 
 # OpenMac for Linux
 
-A from-scratch Macintosh emulator for Linux: three machines over one shared
+A from-scratch Macintosh emulator for Linux: four machines over one shared
 core, implemented from period hardware documentation. This is the Linux port of
 [OpenMac](https://github.com/codingncaffeine/OpenMac) — the same C++ core and
 the same front end, with the Windows plumbing swapped for Linux equivalents
 (WPF → Avalonia, waveOut → SDL3).
 
-> **Status:** alpha. All three machines boot and run in the Linux front end,
+> **Status:** alpha. All four machines boot and run in the Linux front end,
 > with sound, captured mouse and keyboard, floppies, hard disks and the drop
-> box. A CD image mounts on the Quadra 650 and can start it; CD images on the other two machines and networking have not been tested on Linux yet.
+> box. A CD image mounts on the Quadra 650 and the Quadra 950 and can start them; CD images on the other two machines and networking have not been tested on Linux yet.
 > Expect rough edges, and please report what you find.
 
 - **Macintosh Classic** — 68000 (validated against the SingleStepTests suite at
@@ -28,6 +28,13 @@ the same front end, with the Windows plumbing swapped for Linux equivalents
   floppy, Z8530 SCC, the Apple Sound Chip, and VIA1/VIA2. Boots System 7.5 and
   7.5.3 from a hard disk to the Finder desktop, with 8 to 136 MB of RAM and six
   display sizes from 512×384 to 1152×870.
+- **Quadra 950** — 33 MHz 68040, a four-bank memory controller for 8 to 256 MB
+  of RAM, its own DAFB video with 1 or 2 MB of video RAM (millions of colors up
+  to 832×624), two 53C96 SCSI buses, two I/O Processors in front of the
+  SuperDrive, the keyboard and mouse and the serial chip, and a microcontroller
+  that keeps the clock, the parameter RAM and the power. Boots System 7.5 and
+  Mac OS 8.1 from a hard disk or a CD, takes hard disks up to 1 GB, and shuts
+  down and restarts from the Finder.
 
 **The [wiki](https://github.com/codingncaffeine/OpenMac/wiki) has the full story**
 — the architecture, per-chip hardware notes, and how each subsystem was brought up.
@@ -51,7 +58,7 @@ Settings, parameter RAM and the log live in `~/.config/OpenMac/`.
 ## Getting started
 
 1. Install (above) or build (below).
-2. Machine ▸ Model to choose the Classic, Macintosh IIfx, or Quadra 650.
+2. Machine ▸ Model to choose the Classic, Macintosh IIfx, Quadra 650, or Quadra 950.
 3. File ▸ Open ROM… and choose the matching ROM dump.
 4. Insert a floppy image, or create a hard disk and install a System onto it, and boot.
 
@@ -60,6 +67,9 @@ only realizable four-SIMM bank totals: 4, 8, 16, 20, 32, 64, 68, 80, and
 128 MB. File ▸ Create Hard Disk includes the typical 80 MB and 160 MB choices;
 raw, DiskCopy 4.2, and MacBinary-wrapped 400K/800K/1.44 MB floppy images work in
 the internal SuperDrive.
+
+For the Quadra 950, use the 1 MB ROM with checksum `3DC27823`. Machine ▸ Video
+RAM chooses 1 or 2 MB, and File ▸ Create Hard Disk has a 1 GB size for it.
 
 Without a card ROM the IIfx uses OpenMac's own plain video card. For the
 Display Card 8•24 GC, choose its declaration ROM (part number 341-0266) with
@@ -82,7 +92,7 @@ them back.
   it, and boot from it; volumes are settled however the session ends, so a disk
   stays bootable
 - **CD-ROM** — attach a disc image and it mounts on the desktop; on the Quadra 650
-  a startup disc such as a Mac OS install CD starts the machine
+  and the Quadra 950 a startup disc such as a Mac OS install CD starts the machine
 - **Drop box** — a folder on your computer, kept mounted inside the Mac as a
   volume; files dropped on the window land in it
 - **Parameter RAM persists**, so the startup disk, sound volume, 32-bit
