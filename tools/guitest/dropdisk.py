@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """A file dropped on the window rides in on its own disk; this checks both ways of
-getting rid of that disk for good, on a Quadra 950.
+getting rid of that disk for good, and that the Mac's own restart keeps it.
 
-    tools/headless.sh python3 tools/guitest/dropdisk.py --rom Q950.ROM --hard-disk SYSTEM.img
-        (--file BIG-FILE | --state DESK.state) [--icon X,Y] [--trash X,Y] [--boot-seconds N]
+    tools/headless.sh python3 tools/guitest/dropdisk.py --rom ROM --hard-disk SYSTEM.img
+        (--file BIG-FILE | --state DESK.state) [--model classic|iifx|quadra650|quadra950]
+        [--ram MB] [--icon X,Y] [--trash X,Y] [--restart X,Y,DOWN] [--boot-seconds N]
         [--app FILE] [--shots DIR]
 
-SYSTEM.img is a startup disk with Mac OS 8 (a copy is used); BIG-FILE is any file
-over 1.3 MB, which is what becomes a disk on the second SCSI seat. --icon and
---trash are where the dropped disk's icon and the Trash sit on the Mac's 640x480
-screen (defaults: second place in the right-hand column, and the bottom right).
+SYSTEM.img is a startup disk (a copy is used); BIG-FILE is any file over 1.3 MB,
+which is what becomes a disk on the second SCSI seat. --model is the machine
+(default: the Quadra 950 with Mac OS 8). --icon and --trash are where the
+dropped disk's icon and the Trash sit on the Mac's screen (defaults: second
+place in the right-hand column and the bottom right of a 640x480 desktop).
+--restart is where the Finder's Special menu is in the Mac's menu bar and how
+far below it Restart is; with it the test also has the Mac restart itself.
 
 With --state the Mac starts at its desktop from a saved state instead of from
 power-on, with the disk already mounted: about three and a half minutes
@@ -25,7 +29,9 @@ it ended.) The state carries both disks, so SYSTEM.img only has to be there.
   1. The Mac starts with the dropped disk on its desktop. Its icon is dragged to
      the Trash and the Finder's question is answered OK -> the app takes the disk
      off the seat, and after a reset it does not come back.
-  2. The app starts again with the same file -> File > Remove Dropped Disk takes
+  2. The app starts again with the same file. With --restart the Mac is restarted
+     from its own Special menu first -> the new startup mounts the disk again
+     and its icon is back on the desktop. Then File > Remove Dropped Disk takes
      it off, and the icon leaves the Mac's desktop.
 
 The icon's patch of the screen is compared between the steps: with the disk it
@@ -42,8 +48,11 @@ ap.add_argument("--rom", required=True)
 ap.add_argument("--hard-disk", required=True)
 ap.add_argument("--file")
 ap.add_argument("--state")
+ap.add_argument("--model", default="quadra950", choices=["classic", "iifx", "quadra650", "quadra950"])
+ap.add_argument("--ram", type=int, default=None, help="megabytes (default: 4 on the Classic, 32 elsewhere)")
 ap.add_argument("--icon", default="591,115")
 ap.add_argument("--trash", default="587,426")
+ap.add_argument("--restart", default=None, help="X,Y,DOWN: the Special menu's place and Restart's distance below it")
 ap.add_argument("--boot-seconds", type=int, default=150, help="longest wait for a start to reach a still screen")
 ap.add_argument("--app", default=os.path.join(ROOT, "bin", "openmac"))
 ap.add_argument("--shots", default=None, help="folder for a screenshot of each step")
@@ -60,6 +69,16 @@ if not config or os.path.realpath(config).startswith(os.path.realpath(os.path.ex
     sys.exit("drop disk test: refusing to run outside tools/headless.sh (it would use the real profile)")
 ICON = tuple(int(v) for v in args.icon.split(","))
 TRASH = tuple(int(v) for v in args.trash.split(","))
+RESTART = tuple(int(v) for v in args.restart.split(",")) if args.restart else None
+# Per machine: the settings' suffix, the parameter RAM file's name, the Mac's
+# screen, and the core's line when a startup has mounted the second disk.
+SUFFIX, PRAM, SCREEN, MOUNTED = {
+    "classic":   ("",          "classic",   (512, 342), r"hd2: mount result 0000"),
+    "iifx":      ("Iifx",      "iifx",      (640, 480), r"IIfx second disk drive 5 mount result=0"),
+    "quadra650": ("Quadra",    "quadra",    (640, 480), r"hd: drive 9 mount result 0"),
+    "quadra950": ("Quadra950", "quadra950", (640, 480), r"hd: drive 9 mount result 0"),
+}[args.model]
+RAM = args.ram or (4 if args.model == "classic" else 32)
 profile = os.path.join(config, "OpenMac")
 os.makedirs(profile, exist_ok=True)
 log_path = os.path.join(profile, "openmac.log")
@@ -67,8 +86,8 @@ disk = os.path.join(profile, "startup.img")
 shutil.copyfile(args.hard_disk, disk)
 label = os.path.basename(args.file) if args.file else None     # with a state: read from the log
 with open(os.path.join(profile, "settings.json"), "w") as f:
-    json.dump({"Model": "quadra950", "Scale": 1, "LastRomQuadra950": os.path.abspath(args.rom),
-               "LastHardDiskQuadra950": disk, "RamMBQuadra950": 32, "ExternalDrive": False}, f)
+    json.dump({"Model": args.model, "Scale": 1, "LastRom" + SUFFIX: os.path.abspath(args.rom),
+               "LastHardDisk" + SUFFIX: disk, "RamMB" + SUFFIX: RAM, "ExternalDrive": False}, f)
 
 failures = []
 def check(ok, what):
@@ -151,13 +170,16 @@ def desktop_drawn():
     """True when the Mac's screen holds a picture: a machine that never started
     shows one flat color, and two flat patches compare equal."""
     w = main_window()
-    out = subprocess.run(["import", "-window", "root", "-crop", f"640x480+{w[1]}+{w[2] + MENU_BAR}", "+repage",
+    out = subprocess.run(["import", "-window", "root", "-crop",
+                          f"{SCREEN[0]}x{SCREEN[1]}+{w[1]}+{w[2] + MENU_BAR}", "+repage",
                           "-format", "%k", "info:"], capture_output=True, text=True).stdout.strip()
-    return out.isdigit() and int(out) > 200
+    # A black-and-white screen has two colors however much is on it.
+    return out.isdigit() and int(out) > (200 if args.model.startswith("quadra") else 1)
 
 def screen_hash():
     w = main_window()
-    raw = subprocess.run(["import", "-window", "root", "-crop", f"640x460+{w[1]}+{w[2] + MENU_BAR + 20}", "+repage",
+    raw = subprocess.run(["import", "-window", "root", "-crop",
+                          f"{SCREEN[0]}x{SCREEN[1] - 20}+{w[1]}+{w[2] + MENU_BAR + 20}", "+repage",
                           "rgb:-"], capture_output=True).stdout
     return hashlib.sha256(raw).hexdigest() if raw else None
 
@@ -174,6 +196,13 @@ def wait_still(longest):
         elif time.time() - since >= 10.0:
             return True
         time.sleep(2.0)
+    return False
+
+def wait_until(condition, longest):
+    end = time.time() + longest
+    while time.time() < end:
+        if condition(): return True
+        time.sleep(1.0)
     return False
 
 def settle(what):
@@ -196,7 +225,7 @@ def capture():
     w = main_window()
     d.create_resource_object("window", w[0]).set_input_focus(X.RevertToParent, X.CurrentTime); d.sync()
     mark = len(log_text())
-    click(w[1] + 320, w[2] + MENU_BAR + 440)          # the capturing click is not a Mac click
+    click(w[1] + SCREEN[0] // 2, w[2] + MENU_BAR + SCREEN[1] - 40)   # the capturing click is not a Mac click
     return wait_log(r"input: capture engaged", 5, mark) is not None
 def release():
     button(2, True); button(2, False); time.sleep(0.5)
@@ -227,6 +256,16 @@ def start():
             check(wait_log(r"ROM loaded ok", 30, mark) is not None, "the Mac restarts")
     settle("the Finder's desktop is on the screen")
     return app
+
+def reset_settle_seconds(text):
+    """Seconds from a ROM load being asked for to the old machine's volumes
+    being flushed: the flush runs on the guest, at its next event call."""
+    stamp = r"^\S+ (\d+):(\d+):(\d+\.\d+)  "
+    a = re.search(stamp + r"load ROM:", text, re.M)
+    b = re.search(stamp + r"(?:hard disk: (?:volumes flushed|nothing to (?:settle|flush))|IIfx hard disk: guest cache flushed)", text, re.M)
+    if not a or not b: return None
+    seconds = lambda m: int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+    return seconds(b) - seconds(a)
 
 def stop(app):
     app.terminate()
@@ -271,6 +310,10 @@ try:
         mark = len(log_text())
         click(menu[1] + 100, menu[2] + 106)            # Reset
         check(wait_log(r"ROM loaded ok", 30, mark) is not None, "the Mac is reset")
+        took = reset_settle_seconds(log_text()[mark:])
+        check(took is not None and took < 3.0,
+              "the reset flushed the Mac's volumes without a stall"
+              + (f" ({took:.1f} s; under 3)" if took is not None else " (no flush line in the log)"))
         settle("the Finder's desktop is on the screen again")
         shot("after-reset")
         check(icon_patch() == gone, "after the reset the disk has not come back")
@@ -286,6 +329,26 @@ try:
     check(app.poll() is None, "the app is running")
     shot("finder-with-disk-again")
     check(icon_patch() == with_disk, "the dropped disk is on the desktop again")
+    if RESTART:
+        check(capture(), "a click captures the mouse")
+        move_by(-700, -520, 2)                         # into the top left corner
+        move_by(RESTART[0], RESTART[1])
+        time.sleep(0.3)
+        mark = len(log_text())
+        button(1, True); time.sleep(0.5)
+        move_by(0, RESTART[2]); time.sleep(0.5)
+        shot("special-menu")
+        button(1, False)
+        again = wait_log(MOUNTED, 240, mark)
+        check(again is not None, "the Mac restarts itself, and its new startup mounts the dropped disk")
+        release()
+        # The mount line is the new startup's; the icon follows when its
+        # Finder has drawn the desktop.
+        back = wait_until(lambda: icon_patch() == with_disk, 240)
+        shot("after-the-macs-restart")
+        check(back, "the dropped disk is on the desktop again after it")
+        check("put away" not in log_text()[mark:], "and the restart was not taken for a put-away")
+        check(app.poll() is None, "the app is running")
     menu = open_menu(22)                               # File
     check(menu is not None, "the File menu opens")
     if menu:
@@ -312,7 +375,7 @@ finally:
 log = log_text()
 # Every reset and every start after the first hands the machine its parameter
 # RAM back; a machine that never saved any has nothing to hand.
-check(os.path.exists(os.path.join(profile, "pram-quadra950.bin")), "the Quadra 950's parameter RAM was saved")
+check(os.path.exists(os.path.join(profile, f"pram-{PRAM}.bin")), "the machine's parameter RAM was saved")
 check(len(re.findall(r"parameter RAM restored", log)) >= (1 if args.state else 3),
       "and given back to the machine at a restart")
 bad = [l for l in log.splitlines() if re.search(r"UNHANDLED|FATAL|frame tick failed|load failed|access fault|illegal instruction|would not let go", l)]
