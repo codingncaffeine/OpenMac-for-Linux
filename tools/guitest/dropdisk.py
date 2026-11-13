@@ -378,7 +378,7 @@ log = log_text()
 check(os.path.exists(os.path.join(profile, f"pram-{PRAM}.bin")), "the machine's parameter RAM was saved")
 check(len(re.findall(r"parameter RAM restored", log)) >= (1 if args.state else 3),
       "and given back to the machine at a restart")
-bad = [l for l in log.splitlines() if re.search(r"UNHANDLED|FATAL|frame tick failed|load failed|access fault|illegal instruction|would not let go", l)]
+bad = [l for l in log.splitlines() if re.search(r"UNHANDLED|FATAL|frame tick failed|load failed|access fault|illegal instruction|would not let go|did not return", l)]
 check(not bad, "no errors in the app's log" + (": " + bad[0][:160] if bad else ""))
 for line in log.splitlines():
     if re.search(r"\[disk\]|drop", line) and "perf:" not in line:
