@@ -8,8 +8,9 @@
 The floppy and the hard disk are copied to the scratch profile first, so the
 originals are never written. --burst saves a screenshot about four times a
 second between FROM and TO seconds after the start, as PREFIX-NN.png. Passes when the window shows guest frames for the whole run, the machine
-keeps to the speed band, sound is fed without underruns (on the machines that
-report it), and the log holds no error.
+keeps to the speed band, sound is fed without underruns and without the
+machine making more than is played (on the machines that report it), and the
+log holds no error.
 """
 import argparse, json, os, re, shutil, subprocess, sys, time
 
@@ -107,6 +108,9 @@ if steady:
     check(len(slow) <= len(steady) // 10, f"about 60 frames a second ({min(f for f, _ in steady):.1f}"
           f" to {max(f for f, _ in steady):.1f} over {len(steady)} s, {len(slow)} outside 57-63)")
     check(sum(u for _, u in steady) == 0, f"no sound underruns ({sum(u for _, u in steady)})")
+    sound = [(int(f), int(d)) for f, d in re.findall(r"perf: .* fed=(\d+) .*drops=(\d+)", log)][3:]
+    fed, dropped = sum(f for f, _ in sound), sum(d for _, d in sound)
+    check(dropped * 50 <= fed, f"the machine makes about as much sound as is played ({fed} samples played, {dropped} thrown away)")
 else:
     print("        (this machine does not report frame rate or sound queue lines)")
 lo, hi = (float(x) for x in a.speed_band.split(":"))
