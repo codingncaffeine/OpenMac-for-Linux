@@ -32,6 +32,11 @@
   </provides>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.7.4" date="2026-11-13">
+      <description>
+        <p>A hotfix for 0.7.3: on the Quadra 650 and the Quadra 950 the Mac did not start again after an archive was dropped on the window.</p>
+      </description>
+    </release>
     <release version="0.7.3" date="2026-11-13">
       <description>
         <p>The disk an archive dropped on the window rides in on can be taken off the Mac again, with File ▸ Remove Dropped Disk or by dragging its icon to the Trash. The Quadra 950 keeps its settings between sessions, and the Macintosh IIfx keeps a dropped archive's disk through a restart.</p>
