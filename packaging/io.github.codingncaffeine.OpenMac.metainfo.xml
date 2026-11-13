@@ -32,6 +32,11 @@
   </provides>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.7.3" date="2026-11-13">
+      <description>
+        <p>The disk an archive dropped on the window rides in on can be taken off the Mac again, with File ▸ Remove Dropped Disk or by dragging its icon to the Trash. The Quadra 950 keeps its settings between sessions, and the Macintosh IIfx keeps a dropped archive's disk through a restart.</p>
+      </description>
+    </release>
     <release version="0.7.2" date="2026-11-12">
       <description>
         <p>The Macintosh Quadra 950 joins as a fourth machine. Floppy fixes on the Macintosh IIfx, corrected 12-inch and 21-inch displays on the Quadra 650, and the window stays on the display when the Mac's screen changes size.</p>

@@ -10,7 +10,7 @@
     <RootNamespace>OpenMac.Gui</RootNamespace>
     <Product>OpenMac</Product>
     <AssemblyTitle>OpenMac</AssemblyTitle>
-    <Version>0.7.2</Version>
+    <Version>0.7.3</Version>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
