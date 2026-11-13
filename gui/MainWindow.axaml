@@ -51,6 +51,9 @@
                           ToolTip.Tip="Builds a real HFS disk from a folder on this computer and puts it on the SCSI bus. Changes the Mac makes come back to the folder when the disk is closed, the machine restarts, or OpenMac quits." />
                 <MenuItem x:Name="CloseFolderDiskItem" Header="Close Folder Disk"
                           Click="CloseFolderDisk_Click" />
+                <MenuItem x:Name="RemoveDroppedDiskItem" Header="Remove Dropped Disk"
+                          Click="RemoveDroppedDisk_Click"
+                          ToolTip.Tip="Takes a file or disk image that was dropped on the window off the second SCSI seat. The Mac puts its volume away first. Until then the disk comes back at every restart." />
                 <Separator />
                 <MenuItem Header="Exit" InputGesture="Alt+F4" Click="Exit_Click" />
             </MenuItem>
