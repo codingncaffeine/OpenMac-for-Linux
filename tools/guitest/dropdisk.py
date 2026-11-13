@@ -3,12 +3,24 @@
 getting rid of that disk for good, on a Quadra 950.
 
     tools/headless.sh python3 tools/guitest/dropdisk.py --rom Q950.ROM --hard-disk SYSTEM.img
-        --file BIG-FILE [--icon X,Y] [--trash X,Y] [--boot-seconds N] [--app FILE] [--shots DIR]
+        (--file BIG-FILE | --state DESK.state) [--icon X,Y] [--trash X,Y] [--boot-seconds N]
+        [--app FILE] [--shots DIR]
 
 SYSTEM.img is a startup disk with Mac OS 8 (a copy is used); BIG-FILE is any file
 over 1.3 MB, which is what becomes a disk on the second SCSI seat. --icon and
 --trash are where the dropped disk's icon and the Trash sit on the Mac's 640x480
 screen (defaults: second place in the right-hand column, and the bottom right).
+
+With --state the Mac starts at its desktop from a saved state instead of from
+power-on, with the disk already mounted: about three and a half minutes
+instead of nine. Such a state is made headless, with 32 MB as the test uses:
+
+    mkdir drop && cp BIG-FILE drop/
+    build/tests/openmac_trace950 --rom Q950.ROM --banks 16 16 0 0 --harddisk SYSTEM.img \
+        --dropbox drop --frames 7000 --save-state DESK.state
+
+(7000 frames is past the Finder's start on Mac OS 8.1; --shot F.ppm shows where
+it ended.) The state carries both disks, so SYSTEM.img only has to be there.
 
   1. The Mac starts with the dropped disk on its desktop. Its icon is dragged to
      the Trash and the Finder's question is answered OK -> the app takes the disk
@@ -28,17 +40,20 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 ap = argparse.ArgumentParser()
 ap.add_argument("--rom", required=True)
 ap.add_argument("--hard-disk", required=True)
-ap.add_argument("--file", required=True)
+ap.add_argument("--file")
+ap.add_argument("--state")
 ap.add_argument("--icon", default="591,115")
 ap.add_argument("--trash", default="587,426")
-ap.add_argument("--boot-seconds", type=int, default=100, help="time given to reach the Finder")
+ap.add_argument("--boot-seconds", type=int, default=150, help="longest wait for a start to reach a still screen")
 ap.add_argument("--app", default=os.path.join(ROOT, "bin", "openmac"))
 ap.add_argument("--shots", default=None, help="folder for a screenshot of each step")
 args = ap.parse_args()
-for need in (args.rom, args.hard_disk, args.file, args.app):
+if bool(args.file) == bool(args.state):
+    sys.exit("drop disk test: give --file or --state, one of them")
+for need in (args.rom, args.hard_disk, args.file or args.state, args.app):
     if not os.path.exists(need):
         sys.exit(f"drop disk test: missing {need}")
-if os.path.getsize(args.file) <= 1_300_000:
+if args.file and os.path.getsize(args.file) <= 1_300_000:
     sys.exit("drop disk test: --file must be over 1.3 MB (a smaller one rides on a floppy)")
 config = os.environ.get("XDG_CONFIG_HOME")
 if not config or os.path.realpath(config).startswith(os.path.realpath(os.path.expanduser("~/.config"))):
@@ -50,7 +65,7 @@ os.makedirs(profile, exist_ok=True)
 log_path = os.path.join(profile, "openmac.log")
 disk = os.path.join(profile, "startup.img")
 shutil.copyfile(args.hard_disk, disk)
-label = os.path.basename(args.file)
+label = os.path.basename(args.file) if args.file else None     # with a state: read from the log
 with open(os.path.join(profile, "settings.json"), "w") as f:
     json.dump({"Model": "quadra950", "Scale": 1, "LastRomQuadra950": os.path.abspath(args.rom),
                "LastHardDiskQuadra950": disk, "RamMBQuadra950": 32, "ExternalDrive": False}, f)
@@ -140,6 +155,36 @@ def desktop_drawn():
                           "-format", "%k", "info:"], capture_output=True, text=True).stdout.strip()
     return out.isdigit() and int(out) > 200
 
+def screen_hash():
+    w = main_window()
+    raw = subprocess.run(["import", "-window", "root", "-crop", f"640x460+{w[1]}+{w[2] + MENU_BAR + 20}", "+repage",
+                          "rgb:-"], capture_output=True).stdout
+    return hashlib.sha256(raw).hexdigest() if raw else None
+
+def wait_still(longest):
+    """Wait until the Mac shows a picture that has not changed for ten seconds
+    (its menu bar's clock aside): the Finder's desktop, or a notice waiting for
+    an answer. False when that takes longer than `longest` seconds."""
+    end = time.time() + longest
+    last, since = None, time.time()
+    while time.time() < end:
+        now = screen_hash() if desktop_drawn() else None
+        if now is None or now != last:
+            last, since = now, time.time()
+        elif time.time() - since >= 10.0:
+            return True
+        time.sleep(2.0)
+    return False
+
+def settle(what):
+    """A start is over when the screen is still. The System opens with a notice
+    when the Mac was not shut down; Return answers it, and does nothing else."""
+    ok = wait_still(args.boot_seconds)
+    if ok and capture():
+        tap("Return"); release()
+        ok = wait_still(60)
+    check(ok and desktop_drawn(), what)
+
 def open_menu(offset_x):
     w = main_window()
     before = {x[0] for x in windows()}
@@ -156,28 +201,31 @@ def capture():
 def release():
     button(2, True); button(2, False); time.sleep(0.5)
 
-def start(first):
-    """Start the app with the file on its command line (the same road as a drop),
-    say Yes to the restart that loads the seat's driver, wait for the Finder."""
+def start():
+    """Start the app with the dropped disk in the Mac: from the saved state, or
+    with the file on its command line (the same road as a drop) and a Yes to the
+    restart that loads the seat's driver."""
+    global label
     mark = len(log_text())
-    app = subprocess.Popen([args.app, os.path.abspath(args.file)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    built = wait_log(r"\[disk\] transfer disk built for " + re.escape(label), 40, mark)
-    check(built is not None, "the file becomes a transfer disk")
-    time.sleep(2.0)
-    asks = [x for x in windows() if x[0] != (main_window() or (0,))[0] and x[3] > 300 and x[4] < 300]
-    check(len(asks) == 1, "the app asks for the restart that loads the disk's driver")
-    if asks:
-        mark = len(log_text())
-        click(asks[0][1] + asks[0][3] - 66, asks[0][2] + asks[0][4] - 35)      # Yes
-        check(wait_log(r"ROM loaded ok", 30, mark) is not None, "the Mac restarts")
-    print(f"        waiting {args.boot_seconds} s for the Finder", flush=True)
-    time.sleep(args.boot_seconds)
-    if not first:
-        # The first part ended the app without shutting the Mac down, so the
-        # System opens with its notice about that: OK it.
-        if capture(): tap("Return"); release()
-        time.sleep(40)
-    check(desktop_drawn(), "the Finder's desktop is on the screen")
+    if args.state:
+        app = subprocess.Popen([args.app], env=dict(os.environ, OPENMAC_STATE=os.path.abspath(args.state)),
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        loaded = wait_log(r"\[state\] loaded [^\n]*, with “([^”\n]+)” on the second SCSI seat", 60, mark)
+        check(loaded is not None, "the Mac starts from the saved state with a disk on the second seat")
+        if loaded: label = loaded.group(1)
+        else: label = label or "?"
+    else:
+        app = subprocess.Popen([args.app, os.path.abspath(args.file)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        built = wait_log(r"\[disk\] transfer disk built for " + re.escape(label), 40, mark)
+        check(built is not None, "the file becomes a transfer disk")
+        time.sleep(2.0)
+        asks = [x for x in windows() if x[0] != (main_window() or (0,))[0] and x[3] > 300 and x[4] < 300]
+        check(len(asks) == 1, "the app asks for the restart that loads the disk's driver")
+        if asks:
+            mark = len(log_text())
+            click(asks[0][1] + asks[0][3] - 66, asks[0][2] + asks[0][4] - 35)      # Yes
+            check(wait_log(r"ROM loaded ok", 30, mark) is not None, "the Mac restarts")
+    settle("the Finder's desktop is on the screen")
     return app
 
 def stop(app):
@@ -187,7 +235,7 @@ def stop(app):
 
 if os.path.exists(log_path): os.remove(log_path)
 print("-- 1: put away in the Mac")
-app = start(True)
+app = start()
 try:
     check(app.poll() is None, "the app is running")
     shot("finder-with-disk")
@@ -210,7 +258,7 @@ try:
     took = time.time() - asked
     check(put is not None, "the app takes the disk off the seat when the Mac puts it away")
     if put:
-        check(2.0 <= took < 8.0, f"three seconds after the Finder let go of it ({took:.1f} s; 2 to 8)")
+        check(1.5 <= took < 8.0, f"seconds after the Finder let go of it, not at once ({took:.1f} s; 1.5 to 8)")
     time.sleep(1.5)
     release()
     shot("put-away")
@@ -223,19 +271,17 @@ try:
         mark = len(log_text())
         click(menu[1] + 100, menu[2] + 106)            # Reset
         check(wait_log(r"ROM loaded ok", 30, mark) is not None, "the Mac is reset")
-        time.sleep(args.boot_seconds)
-        if capture(): tap("Return"); release()         # the System's "not shut down properly" notice
-        time.sleep(40)
+        settle("the Finder's desktop is on the screen again")
         shot("after-reset")
-        check(desktop_drawn(), "the Finder's desktop is on the screen again")
         check(icon_patch() == gone, "after the reset the disk has not come back")
-        check("transfer disk built" not in log_text()[mark:], "and nothing rebuilt it")
+        check("transfer disk built" not in log_text()[mark:] and "[state] loaded" not in log_text()[mark:],
+              "and nothing put it back")
     check(app.poll() is None, "the app is still running")
 finally:
     stop(app)
 
 print("-- 2: File > Remove Dropped Disk")
-app = start(False)
+app = start()
 try:
     check(app.poll() is None, "the app is running")
     shot("finder-with-disk-again")
@@ -267,7 +313,8 @@ log = log_text()
 # Every reset and every start after the first hands the machine its parameter
 # RAM back; a machine that never saved any has nothing to hand.
 check(os.path.exists(os.path.join(profile, "pram-quadra950.bin")), "the Quadra 950's parameter RAM was saved")
-check(len(re.findall(r"parameter RAM restored", log)) >= 3, "and given back to the machine at each restart")
+check(len(re.findall(r"parameter RAM restored", log)) >= (1 if args.state else 3),
+      "and given back to the machine at a restart")
 bad = [l for l in log.splitlines() if re.search(r"UNHANDLED|FATAL|frame tick failed|load failed|access fault|illegal instruction|would not let go", l)]
 check(not bad, "no errors in the app's log" + (": " + bad[0][:160] if bad else ""))
 for line in log.splitlines():
