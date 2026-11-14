@@ -12,7 +12,7 @@ which is what becomes a disk on the second SCSI seat. --model is the machine
 (default: the Quadra 950 with Mac OS 8). --icon and --trash are where the
 dropped disk's icon and the Trash sit on the Mac's screen (defaults: second
 place in the right-hand column and the bottom right of a 640x480 desktop).
---video-rom is the SE/30's video ROM file, which that machine needs.
+--video-rom is the SE/30's real video ROM file (without it: OpenMac's own).
 --restart is where the Finder's Special menu is in the Mac's menu bar and how
 far below it Restart is; with it the test also has the Mac restart itself.
 
@@ -61,8 +61,6 @@ ap.add_argument("--shots", default=None, help="folder for a screenshot of each s
 args = ap.parse_args()
 if bool(args.file) == bool(args.state):
     sys.exit("drop disk test: give --file or --state, one of them")
-if args.model == "se30" and not args.video_rom:
-    sys.exit("drop disk test: the SE/30 needs --video-rom")
 for need in (args.rom, args.hard_disk, args.file or args.state, args.app) + ((args.video_rom,) if args.video_rom else ()):
     if not os.path.exists(need):
         sys.exit(f"drop disk test: missing {need}")
@@ -77,13 +75,14 @@ RESTART = tuple(int(v) for v in args.restart.split(",")) if args.restart else No
 # Per machine: the settings' suffix, the parameter RAM file's name, the Mac's
 # screen, the core's line when a startup has mounted the second disk, and how
 # far down the Machine menu Reset is (the entries above it differ: the IIfx
-# has its card's ROM there, the Quadra 950 its video RAM).
+# has its card's ROM there, the Quadra 950 its video RAM, the SE/30 its two
+# video ROM entries in the Monitor menu's place).
 SUFFIX, PRAM, SCREEN, MOUNTED, RESET_ROW = {
     "classic":   ("",          "classic",   (512, 342), r"hd2: mount result 0000", 80),
     "iifx":      ("Iifx",      "iifx",      (640, 480), r"IIfx second disk drive 5 mount result=0", 106),
     "quadra650": ("Quadra",    "quadra",    (640, 480), r"hd: drive 9 mount result 0", 80),
     "quadra950": ("Quadra950", "quadra950", (640, 480), r"hd: drive 9 mount result 0", 106),
-    "se30":      ("Se30",      "se30",      (512, 342), r"hd: drive 9 mount result 0", 80),
+    "se30":      ("Se30",      "se30",      (512, 342), r"hd: drive 9 mount result 0", 106),
 }[args.model]
 RAM = args.ram or (4 if args.model == "classic" else 32)
 profile = os.path.join(config, "OpenMac")

@@ -27,13 +27,11 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--rom", required=True)
 ap.add_argument("--floppy", required=True)
 ap.add_argument("--model", default="iifx", choices=["iifx", "se30"])
-ap.add_argument("--video-rom", help="the SE/30's video ROM file")
+ap.add_argument("--video-rom", help="the SE/30's real video ROM file (without it: OpenMac's own)")
 ap.add_argument("--boot-seconds", type=int, default=120, help="time given to reach the Finder")
 ap.add_argument("--app", default=os.path.join(ROOT, "bin", "openmac"))
 ap.add_argument("--shots", default=None, help="folder for a screenshot of each step")
 args = ap.parse_args()
-if args.model == "se30" and not args.video_rom:
-    sys.exit("eject test: the SE/30 needs --video-rom")
 for need in (args.rom, args.floppy, args.app) + ((args.video_rom,) if args.video_rom else ()):
     if not os.path.exists(need):
         sys.exit(f"eject test: missing {need}")
