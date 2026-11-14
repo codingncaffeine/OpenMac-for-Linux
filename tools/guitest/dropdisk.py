@@ -154,14 +154,18 @@ def tap(name):
     xtest.fake_input(d, X.KeyRelease, code); d.sync(); time.sleep(0.06)
 def move_by(dx, dy, step=1):
     """Relative motion one pixel at a time: slow enough that the Mac moves its
-    pointer by what the mouse moved, with none of its own speeding up."""
+    pointer by what the mouse moved, with none of its own speeding up: one
+    count every 40 ms, over two frames. At one every 20 ms two counts can fall
+    between the same two polls of the mouse; the Mac then speeds the pointer
+    up, and it ends 10 to 20 dots past its target. (Bigger steps are for
+    running into a corner, where speeding up does no harm.)"""
     n = max(abs(dx), abs(dy)) // step or 1
     sx = sy = 0
     for i in range(1, n + 1):
         tx, ty = dx * i // n, dy * i // n
         xtest.fake_input(d, X.MotionNotify, detail=1, x=tx - sx, y=ty - sy); d.sync()
         sx, sy = tx, ty
-        time.sleep(0.02)
+        time.sleep(0.04 if step == 1 else 0.02)
 
 def main_window():
     m = re.search(r"window: platform handle XID 0x([0-9A-Fa-f]+)", log_text())
