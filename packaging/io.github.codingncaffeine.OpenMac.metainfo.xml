@@ -10,8 +10,8 @@
   </developer>
   <description>
     <p>
-      OpenMac emulates four Macintosh computers: the Macintosh Classic, the Macintosh IIfx, the
-      Quadra 650 and the Quadra 950. Each machine has its own processor core, video, storage, input, sound and
+      OpenMac emulates five Macintosh computers: the Macintosh Classic, the Macintosh SE/30, the
+      Macintosh IIfx, the Quadra 650 and the Quadra 950. Each machine has its own processor core, video, storage, input, sound and
       parameter RAM, written from scratch from public documentation.
     </p>
     <p>
@@ -32,6 +32,11 @@
   </provides>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.7.5" date="2026-11-13">
+      <description>
+        <p>The Macintosh SE/30 joins as a fifth machine: a 68030 with its built-in screen, floppy drive, hard disks, CD-ROM drive and sound. It starts System 6.0.8, 7.0.1, 7.1 and 7.5.</p>
+      </description>
+    </release>
     <release version="0.7.4" date="2026-11-13">
       <description>
         <p>A hotfix for 0.7.3: on the Quadra 650 and the Quadra 950 the Mac did not start again after an archive was dropped on the window.</p>

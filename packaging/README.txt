@@ -1,8 +1,8 @@
 OpenMac for Linux
 =================
 
-A Macintosh emulator written from scratch: Macintosh Classic, Macintosh IIfx,
-Quadra 650 and Quadra 950. This is an alpha release.
+A Macintosh emulator written from scratch: Macintosh Classic, Macintosh SE/30,
+Macintosh IIfx, Quadra 650 and Quadra 950. This is an alpha release.
 
 OpenMac contains no original Macintosh code. You need the ROM of the machine
 you want to run, and your own system disks.
@@ -40,6 +40,19 @@ libraries (libX11, libICE, libSM, libXi, libXfixes, libXcursor, libXrandr, libXe
 On Alpine use the linux-musl-x64 tarball and install:
     apk add icu-libs libstdc++ libgcc fontconfig libx11 libice libsm libxi libxfixes \
             libxcursor libxrandr libxext
+
+
+The Macintosh SE/30
+-------------------
+
+Use the 256 KB ROM with checksum 97221136. The machine starts on OpenMac's own
+video ROM; Machine > Video ROM takes the original 8 KB file if you have it.
+More than 8 MB of RAM needs System 7.1 with the 32-Bit System Enabler in the
+System Folder and 32-bit addressing switched on in the Memory control panel.
+
+Under System 7.5, open the Apple Menu Options control panel and set Submenus
+to Off. With them on, a click in the menu bar beside the menus can be followed
+by a system error at the next choice from the Apple menu.
 
 
 The Macintosh IIfx and the Display Card 8*24 GC

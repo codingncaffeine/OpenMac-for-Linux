@@ -2,10 +2,10 @@
 Type=Application
 Name=OpenMac
 GenericName=Macintosh Emulator
-Comment=Emulates the Macintosh Classic, Macintosh IIfx, Quadra 650 and Quadra 950
+Comment=Emulates the Macintosh Classic, Macintosh SE/30, Macintosh IIfx, Quadra 650 and Quadra 950
 Exec=openmac
 Icon=openmac
 Terminal=false
 Categories=System;Emulator;
-Keywords=mac;macintosh;emulator;68k;classic;quadra;
+Keywords=mac;macintosh;emulator;68k;classic;se30;quadra;
 StartupWMClass=OpenMac
