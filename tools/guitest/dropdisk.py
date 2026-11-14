@@ -26,6 +26,11 @@ instead of nine. Such a state is made headless, with 32 MB as the test uses:
 
 (7000 frames is past the Finder's start on Mac OS 8.1; --shot F.ppm shows where
 it ended.) The state carries both disks, so SYSTEM.img only has to be there.
+For the SE/30, with the 8 MB and OpenMac's own video ROM the test then runs with
+(--ram 8, no --video-rom):
+
+    build/tests/openmac_tracese30 --rom SE30.ROM --ram 8 --harddisk SYSTEM.img \
+        --dropbox drop --frames 4200 --save-state DESK.state
 
   1. The Mac starts with the dropped disk on its desktop. Its icon is dragged to
      the Trash and the Finder's question is answered OK -> the app takes the disk
