@@ -3,15 +3,16 @@
 getting rid of that disk for good, and that the Mac's own restart keeps it.
 
     tools/headless.sh python3 tools/guitest/dropdisk.py --rom ROM --hard-disk SYSTEM.img
-        (--file BIG-FILE | --state DESK.state) [--model classic|iifx|quadra650|quadra950]
-        [--ram MB] [--icon X,Y] [--trash X,Y] [--restart X,Y,DOWN] [--boot-seconds N]
-        [--app FILE] [--shots DIR]
+        (--file BIG-FILE | --state DESK.state) [--model classic|iifx|quadra650|quadra950|se30]
+        [--video-rom FILE] [--ram MB] [--icon X,Y] [--trash X,Y] [--restart X,Y,DOWN]
+        [--boot-seconds N] [--app FILE] [--shots DIR]
 
 SYSTEM.img is a startup disk (a copy is used); BIG-FILE is any file over 1.3 MB,
 which is what becomes a disk on the second SCSI seat. --model is the machine
 (default: the Quadra 950 with Mac OS 8). --icon and --trash are where the
 dropped disk's icon and the Trash sit on the Mac's screen (defaults: second
 place in the right-hand column and the bottom right of a 640x480 desktop).
+--video-rom is the SE/30's video ROM file, which that machine needs.
 --restart is where the Finder's Special menu is in the Mac's menu bar and how
 far below it Restart is; with it the test also has the Mac restart itself.
 
@@ -48,7 +49,8 @@ ap.add_argument("--rom", required=True)
 ap.add_argument("--hard-disk", required=True)
 ap.add_argument("--file")
 ap.add_argument("--state")
-ap.add_argument("--model", default="quadra950", choices=["classic", "iifx", "quadra650", "quadra950"])
+ap.add_argument("--model", default="quadra950", choices=["classic", "iifx", "quadra650", "quadra950", "se30"])
+ap.add_argument("--video-rom", help="the SE/30's video ROM file")
 ap.add_argument("--ram", type=int, default=None, help="megabytes (default: 4 on the Classic, 32 elsewhere)")
 ap.add_argument("--icon", default="591,115")
 ap.add_argument("--trash", default="587,426")
@@ -59,7 +61,9 @@ ap.add_argument("--shots", default=None, help="folder for a screenshot of each s
 args = ap.parse_args()
 if bool(args.file) == bool(args.state):
     sys.exit("drop disk test: give --file or --state, one of them")
-for need in (args.rom, args.hard_disk, args.file or args.state, args.app):
+if args.model == "se30" and not args.video_rom:
+    sys.exit("drop disk test: the SE/30 needs --video-rom")
+for need in (args.rom, args.hard_disk, args.file or args.state, args.app) + ((args.video_rom,) if args.video_rom else ()):
     if not os.path.exists(need):
         sys.exit(f"drop disk test: missing {need}")
 if args.file and os.path.getsize(args.file) <= 1_300_000:
@@ -71,12 +75,15 @@ ICON = tuple(int(v) for v in args.icon.split(","))
 TRASH = tuple(int(v) for v in args.trash.split(","))
 RESTART = tuple(int(v) for v in args.restart.split(",")) if args.restart else None
 # Per machine: the settings' suffix, the parameter RAM file's name, the Mac's
-# screen, and the core's line when a startup has mounted the second disk.
-SUFFIX, PRAM, SCREEN, MOUNTED = {
-    "classic":   ("",          "classic",   (512, 342), r"hd2: mount result 0000"),
-    "iifx":      ("Iifx",      "iifx",      (640, 480), r"IIfx second disk drive 5 mount result=0"),
-    "quadra650": ("Quadra",    "quadra",    (640, 480), r"hd: drive 9 mount result 0"),
-    "quadra950": ("Quadra950", "quadra950", (640, 480), r"hd: drive 9 mount result 0"),
+# screen, the core's line when a startup has mounted the second disk, and how
+# far down the Machine menu Reset is (the entries above it differ: the IIfx
+# has its card's ROM there, the Quadra 950 its video RAM).
+SUFFIX, PRAM, SCREEN, MOUNTED, RESET_ROW = {
+    "classic":   ("",          "classic",   (512, 342), r"hd2: mount result 0000", 80),
+    "iifx":      ("Iifx",      "iifx",      (640, 480), r"IIfx second disk drive 5 mount result=0", 106),
+    "quadra650": ("Quadra",    "quadra",    (640, 480), r"hd: drive 9 mount result 0", 80),
+    "quadra950": ("Quadra950", "quadra950", (640, 480), r"hd: drive 9 mount result 0", 106),
+    "se30":      ("Se30",      "se30",      (512, 342), r"hd: drive 9 mount result 0", 80),
 }[args.model]
 RAM = args.ram or (4 if args.model == "classic" else 32)
 profile = os.path.join(config, "OpenMac")
@@ -85,9 +92,11 @@ log_path = os.path.join(profile, "openmac.log")
 disk = os.path.join(profile, "startup.img")
 shutil.copyfile(args.hard_disk, disk)
 label = os.path.basename(args.file) if args.file else None     # with a state: read from the log
+settings = {"Model": args.model, "Scale": 1, "LastRom" + SUFFIX: os.path.abspath(args.rom),
+            "LastHardDisk" + SUFFIX: disk, "RamMB" + SUFFIX: RAM, "ExternalDrive": False}
+if args.video_rom: settings["VideoRomSe30"] = os.path.abspath(args.video_rom)
 with open(os.path.join(profile, "settings.json"), "w") as f:
-    json.dump({"Model": args.model, "Scale": 1, "LastRom" + SUFFIX: os.path.abspath(args.rom),
-               "LastHardDisk" + SUFFIX: disk, "RamMB" + SUFFIX: RAM, "ExternalDrive": False}, f)
+    json.dump(settings, f)
 
 failures = []
 def check(ok, what):
@@ -308,15 +317,25 @@ try:
     check(menu is not None, "the Machine menu opens")
     if menu:
         mark = len(log_text())
-        click(menu[1] + 100, menu[2] + 106)            # Reset
-        check(wait_log(r"ROM loaded ok", 30, mark) is not None, "the Mac is reset")
+        click(menu[1] + 100, menu[2] + RESET_ROW)      # Reset
+        reset = wait_log(r"load ROM: [^\n]*\(RAM=(\d+) MB[^\n]*\n(?:[^\n]*\n)*?[^\n]*ROM loaded ok", 30, mark)
+        check(reset is not None and int(reset.group(1)) == RAM,
+              "the Mac is reset, with the memory it had"
+              + (f" ({reset.group(1)} MB; {RAM} before)" if reset else ""))
         took = reset_settle_seconds(log_text()[mark:])
         check(took is not None and took < 3.0,
               "the reset flushed the Mac's volumes without a stall"
               + (f" ({took:.1f} s; under 3)" if took is not None else " (no flush line in the log)"))
         settle("the Finder's desktop is on the screen again")
         shot("after-reset")
-        check(icon_patch() == gone, "after the reset the disk has not come back")
+        # A Finder that keeps no place for the Trash puts it under the last
+        # disk at every start, which is where the dropped disk was: then the
+        # picture is not the "gone" one, and the log has to say the disk was
+        # not mounted again.
+        after = icon_patch()
+        moved = after != gone and after != with_disk and re.search(MOUNTED, log_text()[mark:]) is None
+        check(after == gone or moved, "after the reset the disk has not come back"
+              + (" (its place holds something else now; the startup did not mount it)" if moved else ""))
         check("transfer disk built" not in log_text()[mark:] and "[state] loaded" not in log_text()[mark:],
               "and nothing put it back")
     check(app.poll() is None, "the app is still running")

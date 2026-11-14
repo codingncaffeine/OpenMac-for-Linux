@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Boots one machine in the real window and reports what the log and the screen say.
 
-    tools/headless.sh python3 tools/guitest/boot.py --model classic|iifx|quadra650|quadra950 --rom FILE
+    tools/headless.sh python3 tools/guitest/boot.py --model classic|iifx|quadra650|quadra950|se30 --rom FILE
         [--floppy FILE] [--hard-disk FILE] [--video-rom FILE] [--ram MB] [--seconds N]
         [--shot OUT.png] [--burst FROM:TO:PREFIX] [--speed-band LO:HI] [--app FILE]
 
@@ -16,7 +16,7 @@ import argparse, json, os, re, shutil, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ap = argparse.ArgumentParser()
-ap.add_argument("--model", required=True, choices=["classic", "iifx", "quadra650", "quadra950"])
+ap.add_argument("--model", required=True, choices=["classic", "iifx", "quadra650", "quadra950", "se30"])
 ap.add_argument("--rom", required=True)
 ap.add_argument("--floppy")
 ap.add_argument("--hard-disk")
@@ -44,13 +44,13 @@ hard_disk = None
 if a.hard_disk:
     hard_disk = os.path.join(profile, os.path.basename(a.hard_disk))
     shutil.copyfile(a.hard_disk, hard_disk)
-suffix = {"classic": "", "iifx": "Iifx", "quadra650": "Quadra", "quadra950": "Quadra950"}[a.model]
+suffix = {"classic": "", "iifx": "Iifx", "quadra650": "Quadra", "quadra950": "Quadra950", "se30": "Se30"}[a.model]
 settings = {"Model": a.model, "Scale": 1, "LastRom" + suffix: os.path.abspath(a.rom),
             "LastFloppy" + suffix: floppy, "LastHardDisk" + suffix: hard_disk, "ExternalDrive": False}
 for item in a.set:
     key, value = item.split("=", 1)
     settings[key] = json.loads(value)
-if a.video_rom: settings["VideoRomIifx"] = os.path.abspath(a.video_rom)
+if a.video_rom: settings["VideoRomSe30" if a.model == "se30" else "VideoRomIifx"] = os.path.abspath(a.video_rom)
 if a.ram: settings["RamMB" + suffix] = a.ram
 with open(os.path.join(profile, "settings.json"), "w") as f:
     json.dump(settings, f)

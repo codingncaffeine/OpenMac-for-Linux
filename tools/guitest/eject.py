@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Ejects a mounted floppy from the File menu, as a user would, on a Macintosh IIfx.
+"""Ejects a mounted floppy from the File menu, as a user would, on a Macintosh IIfx
+or SE/30.
 
-    tools/headless.sh python3 tools/guitest/eject.py --rom IIFX.ROM --floppy SYSTEM-DISK
-        [--boot-seconds N] [--app FILE] [--shots DIR]
+    tools/headless.sh python3 tools/guitest/eject.py --rom ROM --floppy SYSTEM-DISK
+        [--model iifx|se30] [--video-rom FILE] [--boot-seconds N] [--app FILE] [--shots DIR]
 
-The IIfx starts from a copy of the floppy (unlocked). Once the Finder is up the
+The machine starts from a copy of the floppy (unlocked). Once the Finder is up the
 test picks File > Eject Floppy from Internal Drive and checks that
 
-  - the Macintosh itself ejects the disk: the drive empties between half a
-    second and eight seconds later (at once would be the disk pulled out from
-    under the System; ten seconds is the core's give-up time),
+  - the Macintosh itself ejects the disk: the drive empties within eight
+    seconds (the core gives up after that and pulls the disk). The IIfx's
+    floppy processor takes at least half a second, so at once would be the disk
+    pulled out from under the System; on the SE/30 the File Manager's own
+    results for the flush and the eject are in the log and must both be 0,
   - the disk's file is written back, changed and still a Macintosh volume,
   - the menu entry is switched off again and the log holds no error.
 
@@ -23,11 +26,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 ap = argparse.ArgumentParser()
 ap.add_argument("--rom", required=True)
 ap.add_argument("--floppy", required=True)
+ap.add_argument("--model", default="iifx", choices=["iifx", "se30"])
+ap.add_argument("--video-rom", help="the SE/30's video ROM file")
 ap.add_argument("--boot-seconds", type=int, default=120, help="time given to reach the Finder")
 ap.add_argument("--app", default=os.path.join(ROOT, "bin", "openmac"))
 ap.add_argument("--shots", default=None, help="folder for a screenshot of each step")
 args = ap.parse_args()
-for need in (args.rom, args.floppy, args.app):
+if args.model == "se30" and not args.video_rom:
+    sys.exit("eject test: the SE/30 needs --video-rom")
+for need in (args.rom, args.floppy, args.app) + ((args.video_rom,) if args.video_rom else ()):
     if not os.path.exists(need):
         sys.exit(f"eject test: missing {need}")
 config = os.environ.get("XDG_CONFIG_HOME")
@@ -108,22 +115,34 @@ def open_file_menu():
     menus = [x for x in windows() if x[0] not in before]
     return menus[0] if len(menus) == 1 else None
 
+# Per machine: its name, the settings' suffix, the log's lines for a disk put
+# in, an eject handed to the Macintosh, and the drive found empty afterwards,
+# and the least time the Macintosh's own eject takes.
+NAME, SUFFIX, PUT_IN, ASKED, EJECTED, SOONEST = {
+    "iifx": ("IIfx", "Iifx", r"IIfx SuperDrive: ", r"\[core\] floppy: the Macintosh was asked to eject the disk",
+             r"\[disk\] the IIfx ejected ", 0.5),
+    "se30": ("SE/30", "Se30", r"\[core\] Macintosh SE/30 floppy: ",
+             r"\[core\] floppy: the host's Eject asked the File Manager \(flush (-?\d+), eject (-?\d+)\)",
+             r"\[disk\] the machine ejected ", 0.0),
+}[args.model]
+settings = {"Model": args.model, "Scale": 1, "LastRom" + SUFFIX: os.path.abspath(args.rom), "LastFloppy" + SUFFIX: floppy,
+            "RamMB" + SUFFIX: 8, "WriteProtectFloppies": False, "ExternalDrive": False}
+if args.video_rom: settings["VideoRomSe30"] = os.path.abspath(args.video_rom)
 with open(os.path.join(profile, "settings.json"), "w") as f:
-    json.dump({"Model": "iifx", "Scale": 1, "LastRomIifx": os.path.abspath(args.rom), "LastFloppyIifx": floppy,
-               "RamMBIifx": 8, "WriteProtectFloppies": False, "ExternalDrive": False}, f)
+    json.dump(settings, f)
 if os.path.exists(log_path): os.remove(log_path)
 app = subprocess.Popen([args.app], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 try:
-    check(wait_log(r"display: first guest frame shown") is not None, "the IIfx starts in the window")
+    check(wait_log(r"display: first guest frame shown") is not None, f"the {NAME} starts in the window")
     name = re.escape(os.path.basename(floppy))
-    check(wait_log(r"IIfx SuperDrive: " + name, 10) is not None, "the floppy is in the drive")
+    check(wait_log(PUT_IN + name, 10) is not None, "the floppy is in the drive")
     seated = wait_log(r"\[core\] floppy: [^\n]* disk in the internal SuperDrive \(([^)\n]*)\)", 10)
     check(seated is not None and "write-protected" not in seated.group(1), "and it is not write-protected")
     print(f"        waiting {args.boot_seconds} s for the Finder")
     time.sleep(args.boot_seconds)
     shot("1-finder")
     check(app.poll() is None, "the app is still running")
-    check(re.search(r"the IIfx ejected", log_text()) is None, "nothing has ejected the disk so far (the control)")
+    check(re.search(EJECTED, log_text()) is None, "nothing has ejected the disk so far (the control)")
 
     menu = open_file_menu()
     check(menu is not None, "the File menu opens")
@@ -132,13 +151,17 @@ try:
         mark = len(log_text())
         clicked = time.time()
         click(menu[1] + 120, menu[2] + row_y("Eject Floppy from Internal Drive"))
-        asked = wait_log(r"\[core\] floppy: the Macintosh was asked to eject the disk", 5, mark)
+        asked = wait_log(ASKED, 5, mark)
         check(asked is not None, "the eject is handed to the Macintosh")
-        out = wait_log(r"\[disk\] the IIfx ejected " + name, 14, mark)
+        if asked and asked.groups():
+            check(asked.groups() == ("0", "0"),
+                  f"its File Manager flushed and ejected the volume (results {asked.group(1)} and {asked.group(2)})")
+        out = wait_log(EJECTED + name, 14, mark)
         took = time.time() - clicked - 1.08          # click() itself sleeps that long after the press
         check(out is not None, "the drive empties")
         if out:
-            check(0.5 <= took < 8.0, f"the Macintosh ejected it itself, {took:.1f} s after the click (0.5 to 8 s)")
+            check(SOONEST <= took < 8.0,
+                  f"the Macintosh ejected it itself, {max(took, 0.0):.1f} s after the click ({SOONEST:g} to 8 s)")
         log = log_text()[mark:]
         check("did not eject the disk" not in log, "the core did not have to take the disk out")
         check("disk ejected from the internal SuperDrive" in log, "the mechanism reports the eject")
@@ -155,7 +178,7 @@ try:
             mark = len(log_text())
             click(menu[1] + 120, menu[2] + row_y("Eject Floppy from Internal Drive"))
             time.sleep(1.0)
-            check("asked to eject" not in log_text()[mark:], "with the drive empty the menu entry does nothing")
+            check(re.search(ASKED, log_text()[mark:]) is None, "with the drive empty the menu entry does nothing")
             xtest.fake_input(d, X.KeyPress, 9); d.sync(); xtest.fake_input(d, X.KeyRelease, 9); d.sync()   # Escape
     check(app.poll() is None, "the app is still running at the end")
 finally:
